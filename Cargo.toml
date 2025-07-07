@@ -2,6 +2,15 @@
 name = "ringbeam"
 version = "0.1.0"
 edition = "2024"
+# Most of it is licensed under BSD-3-Clause because it's based on DPDK
+# but cache_padding.rs is licensed under MIT OR Apache-2.0 as it's from Crossbeam.
+license = "BSD-3-Clause AND (MIT OR Apache-2.0)"
 
 [dependencies]
 thiserror = "2.0.12"
+
+[features]
+# TODO: Insert likely and unlikely everywhere gated behind a feature
+#likely = []
+# TODO: Use TrustedLen iterator for input bounds behind a feature
+#trusted_len = []
