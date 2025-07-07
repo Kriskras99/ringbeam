@@ -5,7 +5,7 @@ mod headtail;
 use Ordering::{Acquire, Relaxed, Release};
 pub use cache_padded::CachePadded;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
+use std::mem::{MaybeUninit, offset_of};
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicU32, Ordering, fence};
 use thiserror::Error;
@@ -347,6 +347,15 @@ where
 {
 }
 
+/// A ringbuffer.
+///
+/// # Generics
+/// - `N`, the capacity of the channel. Must be equal to `2.pow(m)-1` where `m >= 1 && m <= 31`.
+/// - `T`, the type of messages that will be sent. `size_of::<T>()` must be a multiple of 4.
+/// - `P`, the mode of head-tail synchronisation of producers, see [`HeadTail`].
+/// - `C`, the mode of head-tail synchronisation of consumers, see [`HeadTail`].
+/// - `S`, the type of sender, see [`Sender`].
+/// - `R`, the type of receiver, see [`Receiver`].
 struct Ring<const N: usize, T, P, C, S, R>
 where
     P: HeadTail,
@@ -371,6 +380,56 @@ where
     S: Sender<N, T, P, C, R>,
     R: Receiver<N, T, P, C, S>,
 {
+    /// Create the ring returning a sender and receiver.
+    #[expect(
+        clippy::new_ret_no_self,
+        reason = "This type should only be used through the sender and receiver"
+    )]
+    pub fn new() -> (S, R) {
+        // Check input
+        const {
+            assert!(
+                !(!N.checked_add(1).unwrap().is_power_of_two() && N <= u32::MAX as usize),
+                "Requested capacity was not equal to `2.pow(n)-1` where `n >= 1`"
+            );
+            assert!(
+                size_of::<T>().is_multiple_of(4),
+                "T must be a multiple of four"
+            );
+        }
+
+        // Allocate the ring
+        let layout = std::alloc::Layout::new::<Self>();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        // Initialize the ring
+        // SAFETY: this is the only pointer to the data, no references exist
+        unsafe {
+            ptr.add(offset_of!(Self, active))
+                .cast::<CachePadded<AtomicU32>>()
+                .write(CachePadded::new(AtomicU32::new(0x0001_0001)));
+            ptr.add(offset_of!(Self, prod_headtail))
+                .cast::<CachePadded<P>>()
+                .write(CachePadded::default());
+            ptr.add(offset_of!(Self, cons_headtail))
+                .cast::<CachePadded<C>>()
+                .write(CachePadded::default());
+            // phantom is a ZST and can not be initialized (and doesn't need to be either)
+            // data is a UnsafeCell<[T; N]> and must not be read when uninitialized
+        }
+
+        // The ring is now initialized and valid
+        let ring = ptr.cast::<Self>().cast_const();
+
+        // SAFETY: ring has been initialized and correctly aligned. Producer and consumer counter have
+        //         been set to one and we only call new_no_register once.
+        let (sender, receiver) = unsafe { (S::new_no_register(ring), R::new_no_register(ring)) };
+        (sender, receiver)
+    }
+
     fn register_producer(&self) -> Result<(), Error> {
         // TODO: This ordering is most likely too strict
         self.active
@@ -527,61 +586,4 @@ impl Claim {
             new
         }
     }
-}
-
-/// Create a bounded channel.
-///
-/// If more t
-///
-/// # Generics
-/// - `N`, the capacity of the channel. Must be equal to `2.pow(m)-1` where `m >= 1 && m <= 31`.
-/// - `T`, the type of messages that will be sent. `size_of::<T>()` must be a multiple of 4.
-/// - `P`, the mode of head-tail synchronisation of producers, see [`HeadTail`].
-/// - `C`, the mode of head-tail synchronisation of consumers, see [`HeadTail`].
-/// - `S`, the type of sender, see [`Sender`].
-/// - `R`, the type of receiver, see [`Receiver`].
-pub fn bounded<const N: usize, T, P, C, S, R>() -> (S, R)
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: Sender<N, T, P, C, R>,
-    R: Receiver<N, T, P, C, S>,
-{
-    // Check input
-    const {
-        assert!(
-            !(!N.checked_add(1).unwrap().is_power_of_two() && N <= u32::MAX as usize),
-            "Requested capacity was not equal to `2.pow(n)-1` where `n >= 1`"
-        );
-        assert!(
-            size_of::<T>().is_multiple_of(4),
-            "T must be a multiple of four"
-        );
-    }
-
-    // Allocate the ring
-    let layout = std::alloc::Layout::new::<Ring<N, T, P, C, S, R>>();
-    let ptr = unsafe { std::alloc::alloc(layout) };
-    if ptr.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    let ring: *mut Ring<N, T, P, C, S, R> = ptr.cast();
-
-    // Initialize the ring
-    // SAFETY: this is the only pointer to the data, no references exist
-    unsafe {
-        (*ring).active = AtomicU32::new(0x0001_0001);
-        (*ring).prod_headtail = CachePadded::default();
-        (*ring).cons_headtail = CachePadded::default();
-        // phantom is a ZST and can not be initialized (and doesn't need to be either)
-        // data is a [T; N] and must not be read when uninitialized
-    }
-
-    // The ring is now initialized and valid
-    let ring = ring.cast_const();
-
-    // SAFETY: ring has been initialized and correctly aligned. Producer and consumer counter have
-    //         been set to one and we only call new_no_register once.
-    let (sender, receiver) = unsafe { (S::new_no_register(ring), R::new_no_register(ring)) };
-    (sender, receiver)
 }

@@ -136,3 +136,4 @@ pub trait HeadTailInner: Default {
 }
 
 pub trait HeadTail: HeadTailInner {}
+impl<T: HeadTailInner> HeadTail for T {}
