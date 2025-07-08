@@ -1,19 +1,17 @@
-use crate::ring::{IsMulti, Ring};
-use crate::{HeadTail, Multi, Single};
-use std::marker::PhantomData;
+use crate::ring::{FixedQueue, IsMulti, RecvValues, Ring, VariableQueue};
+use crate::{Error, HeadTail, Multi, cold_path};
 
-pub struct ReceiverAct<const N: usize, T, P, C, S, R>
+pub struct Receiver<const N: usize, T, P, C, S, R>
 where
     P: HeadTail,
     C: HeadTail,
     S: IsMulti,
     R: IsMulti,
 {
-    phantom: PhantomData<T>,
     ring: *const Ring<N, T, P, C, S, R>,
 }
 
-impl<const N: usize, T, P, C, S, R> ReceiverAct<N, T, P, C, S, R>
+impl<const N: usize, T, P, C, S, R> Receiver<N, T, P, C, S, R>
 where
     P: HeadTail,
     C: HeadTail,
@@ -25,19 +23,18 @@ where
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`].
     pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C, S, R>) -> Self {
-        if !S::IS_MULTI {
-            // As only 1 Receiver<Single> is allowed to exist this would require ring.active_consumers
-            // to be zero, but that would mean the channel is closed.
-            panic!("Receiver<Single> cannot be created through Receiver::new");
-        }
+        // As only 1 Receiver<Single> is allowed to exist this would require ring.active_consumers
+        // to be zero, but that would mean the channel is closed.
+        assert!(
+            S::IS_MULTI,
+            "Receiver<Single> cannot be created through Receiver::new"
+        );
+
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             (*ring).register_consumer().unwrap();
         }
-        Self {
-            ring,
-            phantom: PhantomData,
-        }
+        Self { ring }
     }
 
     /// Create a new receiver but don't register it as active.
@@ -50,98 +47,51 @@ where
     pub(crate) unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, R>) -> Self {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
+            cold_path();
             debug_assert!((*ring).active_consumers() == 1);
         }
-        Self {
-            ring,
-            phantom: PhantomData,
-        }
+        Self { ring }
     }
-}
 
-pub trait ReceiverInner<const N: usize, T, P, C, S, R>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
-    Self: Sized,
-{
-    /// Create a new receiver.
-    ///
-    /// # Safety
-    /// `ring` must point to an initialized and aligned [`Ring`].
-    unsafe fn new(ring: *const Ring<N, T, P, C, S, R>) -> Self;
-
-    /// Create a new receiver but don't register it as active.
-    ///
-    /// This should only be used when initializing the ring.
-    ///
-    /// # Safety
-    /// `ring` must point to an initialized and aligned [`Ring`]. In addition,
-    /// the active receivers counter must have already been incremented.
-    unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, R>) -> Self;
-}
-
-pub trait Receiver<const N: usize, T, P, C, S, R>: ReceiverInner<N, T, P, C, S, R>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
-{
-}
-impl<const N: usize, T, P, C, S, R, Inner> Receiver<N, T, P, C, S, R> for Inner
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
-    Inner: ReceiverInner<N, T, P, C, S, R>,
-{
-}
-
-pub struct MultiConsumer<const N: usize, T, P, C, S>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-{
-    phantom: PhantomData<T>,
-    ring: *const Ring<N, T, P, C, S, Multi>,
-}
-
-impl<const N: usize, T, P, C, S> ReceiverInner<N, T, P, C, S, Multi>
-    for MultiConsumer<N, T, P, C, S>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-{
-    unsafe fn new(ring: *const Ring<N, T, P, C, S, Multi>) -> Self {
-        // SAFETY: caller has assured that `ring` is initialized and aligned.
-        unsafe {
-            (*ring).register_consumer().unwrap();
-        }
-        Self {
-            ring,
-            phantom: PhantomData,
+    /// Try to get one item from the channel.
+    pub fn try_recv(&self) -> Result<T, Error> {
+        match self.try_recv_bulk(1) {
+            Ok(mut res) => Ok(res.next().unwrap_or_else(|| unreachable!())),
+            Err(e) => {
+                cold_path();
+                Err(e)
+            }
         }
     }
 
-    unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, Multi>) -> Self {
-        // SAFETY: caller has assured that `ring` is initialized and aligned.
-        unsafe {
-            debug_assert!((*ring).active_consumers() == 1);
-        }
-        Self {
-            ring,
-            phantom: PhantomData,
-        }
+    /// Try to get `n` items from the channel or none at all.
+    ///
+    /// # Returns
+    /// An iterator over the items. This iterator is allowed to outlive the receiver.
+    /// Dropping the iterator while it still has items, will also drop those items.
+    pub fn try_recv_bulk(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
+        // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
+        //         No mutable aliasing in the ring except for inside the UnsafeCell.
+        let ring = unsafe { &*self.ring };
+
+        ring.try_dequeue::<FixedQueue>(n)
+    }
+
+    /// Try to get at most `n` items from the channel.
+    ///
+    /// # Returns
+    /// An iterator over the items. This iterator is allowed to outlive the receiver.
+    /// Dropping the iterator while it still has items, will also drop those items.
+    pub fn try_recv_burst(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
+        // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
+        //         No mutable aliasing in the ring except for inside the UnsafeCell.
+        let ring = unsafe { &*self.ring };
+
+        ring.try_dequeue::<VariableQueue>(n)
     }
 }
 
-impl<const N: usize, T, P, C, S> Clone for MultiConsumer<N, T, P, C, S>
+impl<const N: usize, T, P, C, S> Clone for Receiver<N, T, P, C, S, Multi>
 where
     P: HeadTail,
     C: HeadTail,
@@ -153,60 +103,35 @@ where
     }
 }
 
-// SAFETY: The ring is designed to be accessed from different threads.
-unsafe impl<const N: usize, T, P, C, S> Send for MultiConsumer<N, T, P, C, S>
+impl<const N: usize, T, P, C, S, R> Drop for Receiver<N, T, P, C, S, R>
 where
     P: HeadTail,
     C: HeadTail,
     S: IsMulti,
+    R: IsMulti,
 {
-}
-
-// SAFETY: Mutable access to the data is guarded by atomics.
-unsafe impl<const N: usize, T, P, C, S> Sync for MultiConsumer<N, T, P, C, S>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-{
-}
-
-pub struct SingleConsumer<const N: usize, T, P, C, S>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-{
-    phantom: PhantomData<T>,
-    ring: *const Ring<N, T, P, C, S, Single>,
-}
-impl<const N: usize, T, P, C, S> ReceiverInner<N, T, P, C, S, Single>
-    for SingleConsumer<N, T, P, C, S>
-where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-{
-    unsafe fn new(ring: *const Ring<N, T, P, C, S, Single>) -> Self {
-        // As only 1 SingleConsumer is allowed to exist this would require ring.active_consumers
-        // to be zero, but that would mean the channel is closed.
-        panic!("SingleConsumer cannot be created through ReceiverInner::new");
-    }
-
-    unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, Single>) -> Self {
-        // SAFETY: caller has assured that `ring` is initialized and aligned.
+    fn drop(&mut self) {
+        // TODO: Poison the ring if panicking
         unsafe {
-            debug_assert!((*ring).active_consumers() == 1);
-        }
-        Self {
-            ring,
-            phantom: PhantomData,
+            if (*self.ring).unregister_consumer() {
+                Ring::cleanup(self.ring);
+            }
         }
     }
 }
 
 // SAFETY: The ring is designed to be accessed from different threads.
-unsafe impl<const N: usize, T, P, C, S> Send for SingleConsumer<N, T, P, C, S>
+unsafe impl<const N: usize, T, P, C, S, R> Send for Receiver<N, T, P, C, S, R>
+where
+    P: HeadTail,
+    C: HeadTail,
+    S: IsMulti,
+    R: IsMulti,
+{
+}
+
+// SAFETY: Mutable access to the consumer head is guarded by atomics, but only for `Multi`.
+unsafe impl<const N: usize, T, P, C, S> Sync for Receiver<N, T, P, C, S, Multi>
 where
     P: HeadTail,
     C: HeadTail,

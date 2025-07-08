@@ -1,6 +1,5 @@
 use crate::ring::{FixedQueue, IsMulti, Ring, VariableQueue};
-use crate::{Error, HeadTail, Multi};
-use std::marker::PhantomData;
+use crate::{Error, HeadTail, Multi, cold_path};
 
 pub struct Sender<const N: usize, T, P, C, S, R>
 where
@@ -24,11 +23,13 @@ where
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`].
     pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C, S, R>) -> Self {
-        if !S::IS_MULTI {
-            // As only 1 Sender<Single> is allowed to exist this would require ring.active_producers
-            // to be zero, but that would mean the channel is closed.
-            panic!("Sender<Single> cannot be created through Sender::new");
-        }
+        // As only 1 Sender<Single> is allowed to exist this would require ring.active_producers
+        // to be zero, but that would mean the channel is closed.
+        assert!(
+            S::IS_MULTI,
+            "Sender<Single> cannot be created through Sender::new"
+        );
+
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             (*ring).register_producer().unwrap();
@@ -46,6 +47,7 @@ where
     pub(crate) unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, R>) -> Self {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
+            cold_path();
             debug_assert!((*ring).active_producers() == 1);
         }
         Self { ring }
@@ -56,12 +58,18 @@ where
     /// # Returns
     /// If successful, `Ok(None)`. If full, `Ok(Some(T))`. Otherwise,
     /// it returns `Err(Error::Closed)` or `Err(Error::Poisoned)`.
-    fn try_send(&self, value: T) -> Result<Option<T>, Error> {
+    pub fn try_send(&self, value: T) -> Result<Option<T>, Error> {
         let mut once = std::iter::once(value);
         match self.try_send_bulk(&mut once) {
             Ok(1) => Ok(None),
-            Err(Error::Closed) => Err(Error::Closed),
-            Err(Error::Full) => Ok(once.next()),
+            Err(Error::Closed) => {
+                cold_path();
+                Err(Error::Closed)
+            }
+            Err(Error::Full) => {
+                cold_path();
+                Ok(once.next())
+            }
             _ => unreachable!(),
         }
     }
@@ -71,7 +79,7 @@ where
     /// # Returns
     /// The amount of values written
     // TODO: The Iterator must be TrustedLen, but that's unstable
-    fn try_send_bulk<I>(&self, values: &mut I) -> Result<usize, Error>
+    pub fn try_send_bulk<I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
     {
@@ -89,7 +97,7 @@ where
     /// # Returns
     /// The amount of values written
     // TODO: The Iterator must be TrustedLen, but that's unstable
-    fn try_send_burst<I>(&self, values: &mut I) -> Result<usize, Error>
+    pub fn try_send_burst<I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
     {
@@ -124,7 +132,7 @@ where
         // TODO: Poison the ring if panicking
         unsafe {
             if (*self.ring).unregister_producer() {
-                // TODO: unallocate the ring
+                Ring::cleanup(self.ring);
             }
         }
     }

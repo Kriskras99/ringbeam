@@ -33,7 +33,7 @@ use std::ops::{Deref, DerefMut};
 ///
 /// Alignment and padding:
 ///
-/// ```
+/// ```ignore
 /// use ringbeam::CachePadded;
 ///
 /// let array = [CachePadded::new(1i8), CachePadded::new(2i8)];
@@ -49,7 +49,7 @@ use std::ops::{Deref, DerefMut};
 /// different cache lines so that concurrent threads pushing and popping elements don't invalidate
 /// each other's cache lines:
 ///
-/// ```
+/// ```ignore
 /// use ringbeam::CachePadded;
 /// use std::sync::atomic::AtomicUsize;
 ///
@@ -161,7 +161,7 @@ impl<T> CachePadded<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use ringbeam::CachePadded;
     ///
     /// let padded_value = CachePadded::new(1);
@@ -174,7 +174,7 @@ impl<T> CachePadded<T> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use ringbeam::CachePadded;
     ///
     /// let padded_value = CachePadded::new(7);

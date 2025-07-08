@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use crate::atomics::{AtomicU32, Ordering};
 
 #[derive(Default)]
 pub struct TailSync {

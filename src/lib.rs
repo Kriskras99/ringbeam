@@ -1,18 +1,33 @@
-#![expect(unused, reason = "Still developing")]
+#![cfg_attr(feature = "trusted_len", feature(trusted_len))]
+#![cfg_attr(feature = "likely", feature(cold_path))]
+#![expect(clippy::type_complexity, reason = "This crate is type generics heavy")]
 mod cache_padded;
 mod consumer;
 mod headtail;
 mod producer;
 mod ring;
 
-pub use consumer::{MultiConsumer, SingleConsumer};
+pub use consumer::Receiver;
 pub use headtail::{HeadTail, HeadTailSync, RelaxedTailSync, TailSync};
 pub use producer::Sender;
 pub use ring::{Multi, Single};
 
-use crate::consumer::Receiver;
 use crate::ring::{IsMulti, Ring};
 use thiserror::Error;
+
+#[cfg(feature = "likely")]
+use std::hint::cold_path;
+#[cfg(not(feature = "likely"))]
+const fn cold_path() {}
+
+#[cfg(feature = "loom")]
+mod atomics {
+    pub use loom::sync::atomic::{AtomicU32, Ordering, fence};
+}
+#[cfg(not(feature = "loom"))]
+mod atomics {
+    pub use std::sync::atomic::{AtomicU32, Ordering, fence};
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -20,14 +35,18 @@ pub enum Error {
     Closed,
     #[error("Channel is full")]
     Full,
-    #[error("Channel had room, but not enough room for all items")]
+    #[error("Channel is empty")]
+    Empty,
+    #[error("Channel had a few items, but not as many as requested")]
+    NotEnoughItems,
+    #[error("Channel had room, but not enough room for all the items")]
     NotEnoughSpace,
 }
 
 pub type MP<const N: usize, T, C, R> = Sender<N, T, TailSync, C, Multi, R>;
 pub type SP<const N: usize, T, C, R> = Sender<N, T, TailSync, C, Single, R>;
-pub type MC<const N: usize, T, P, S> = MultiConsumer<N, T, TailSync, P, S>;
-pub type SC<const N: usize, T, P, S> = SingleConsumer<N, T, TailSync, P, S>;
+pub type MC<const N: usize, T, P, S> = Receiver<N, T, TailSync, P, S, Multi>;
+pub type SC<const N: usize, T, P, S> = Receiver<N, T, TailSync, P, S, Single>;
 
 /// Create a multi-producer/multi-consumer channel with space for `N` values of `T`.
 #[must_use]
@@ -54,10 +73,9 @@ pub fn spsc<const N: usize, T>() -> (SP<N, T, TailSync, Single>, SC<N, T, TailSy
 }
 
 #[must_use]
-pub fn bounded<const N: usize, T, P, C, S, R, ReceiveHalf>()
--> (Sender<N, T, P, C, S, R>, ReceiveHalf)
+pub fn bounded<const N: usize, T, P, C, S, R>()
+-> (Sender<N, T, P, C, S, R>, Receiver<N, T, P, C, S, R>)
 where
-    ReceiveHalf: Receiver<N, T, P, C, S, R>,
     P: HeadTail,
     C: HeadTail,
     S: IsMulti,

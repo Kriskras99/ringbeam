@@ -1,12 +1,15 @@
+use crate::atomics::{
+    AtomicU32,
+    Ordering::{Acquire, Relaxed, Release, SeqCst},
+    fence,
+};
 use crate::cache_padded::CachePadded;
 use crate::consumer::Receiver;
 use crate::producer::Sender;
-use crate::{Error, HeadTail};
+use crate::{Error, HeadTail, cold_path};
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit, offset_of};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
-use std::sync::atomic::{AtomicU32, fence};
 
 pub enum Multi {}
 impl IsMulti for Multi {
@@ -61,19 +64,12 @@ where
         clippy::new_ret_no_self,
         reason = "This type should only be used through the sender and receiver"
     )]
-    pub fn new<ReceiveHalf>() -> (Sender<N, T, P, C, S, R>, ReceiveHalf)
-    where
-        ReceiveHalf: Receiver<N, T, P, C, S, R>,
-    {
+    pub fn new() -> (Sender<N, T, P, C, S, R>, Receiver<N, T, P, C, S, R>) {
         // Check input
         const {
             assert!(
-                !(!N.checked_add(1).unwrap().is_power_of_two() && N <= u32::MAX as usize),
+                N != 0 && N.checked_add(1).unwrap().is_power_of_two() && N <= u32::MAX as usize,
                 "Requested capacity was not equal to `2.pow(n)-1` where `n >= 1`"
-            );
-            assert!(
-                size_of::<T>().is_multiple_of(4),
-                "T must be a multiple of four"
             );
         }
 
@@ -81,11 +77,16 @@ where
         let layout = std::alloc::Layout::new::<Self>();
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
+            cold_path();
             std::alloc::handle_alloc_error(layout);
         }
 
         // Initialize the ring
         // SAFETY: this is the only pointer to the data, no references exist
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "The pointers are guaranteed aligned by Layout"
+        )]
         unsafe {
             ptr.add(offset_of!(Self, active))
                 .cast::<CachePadded<AtomicU32>>()
@@ -108,10 +109,23 @@ where
         let (sender, receiver) = unsafe {
             (
                 Sender::new_no_register(ring),
-                ReceiveHalf::new_no_register(ring),
+                Receiver::new_no_register(ring),
             )
         };
         (sender, receiver)
+    }
+
+    /// Deallocate the ringbuffer.
+    ///
+    /// # Safety
+    /// The caller *must* be the last with access to the ring (i.e. `Self::active_consumers + Self::active_producers == 1`).
+    pub unsafe fn cleanup(ring: *const Self) {
+        assert!(
+            unsafe { (&*ring).active_consumers() + (&*ring).active_producers() } == 1,
+            "Still more than one active consumer + producer"
+        );
+        let layout = std::alloc::Layout::new::<Self>();
+        unsafe { std::alloc::dealloc(ring.cast::<u8>().cast_mut(), layout) };
     }
 
     pub fn register_producer(&self) -> Result<(), Error> {
@@ -119,8 +133,10 @@ where
         self.active
             .fetch_update(SeqCst, SeqCst, |old| {
                 if old & 0xFFFF_0000 == 0 || old & 0x0000_FFFF == 0 {
+                    cold_path();
                     None
                 } else if old & 0xFFFF_0000 == 0xFFFF_0000 {
+                    cold_path();
                     panic!("Too many producers, would overflow!");
                 } else {
                     // Saturating add for only the producer bytes
@@ -137,8 +153,10 @@ where
         self.active
             .fetch_update(SeqCst, SeqCst, |old| {
                 if old & 0xFFFF_0000 == 0 || old & 0x0000_FFFF == 0 {
+                    cold_path();
                     None
                 } else if old & 0x0000_FFFF == 0x0000_FFFF {
+                    cold_path();
                     panic!("Too many consumers, would overflow!");
                 } else {
                     // Saturating add for only the consumer bytes
@@ -153,9 +171,11 @@ where
     /// Unregister an active producer, returning `true` if it was the last one.
     pub fn unregister_producer(&self) -> bool {
         // TODO: This ordering is most likely too strict
-        self.active
+        let old = self
+            .active
             .fetch_update(SeqCst, SeqCst, |old| {
                 if (old & 0xFFFF_0000) == 0 {
+                    cold_path();
                     panic!("Active producers is zero but trying to unregister an active producer");
                 } else {
                     // Sub for only the producer bytes
@@ -163,16 +183,20 @@ where
                     Some((old & 0x0000_FFFF) | ((p as u32) << 16))
                 }
             })
-            .unwrap_or_else(|_| unreachable!())
-            == 0
+            .unwrap_or_else(|_| unreachable!());
+        // The previous value had one producer remaining, so that is now zero.
+        // So the ring is completely closed and the caller should cleanup.
+        old == 0x0000_0001
     }
 
     /// Unregister an active consumer, returning `true` if it was the last one.
     pub fn unregister_consumer(&self) -> bool {
         // TODO: This ordering is most likely too strict
-        self.active
+        let old = self
+            .active
             .fetch_update(SeqCst, SeqCst, |old| {
                 if (old & 0x0000_FFFF) == 0 {
+                    cold_path();
                     panic!("Active consumers is zero but trying to unregister an active consumer");
                 } else {
                     // Sub for only the consumer bytes
@@ -180,8 +204,10 @@ where
                     Some((old & 0xFFFF_0000) | (p as u32))
                 }
             })
-            .unwrap_or_else(|_| unreachable!())
-            == 0
+            .unwrap_or_else(|_| unreachable!());
+        // The previous value had one consumer remaining, so that is now zero.
+        // So the ring is completely closed and the caller should cleanup.
+        old == 0x0000_0001
     }
 
     pub fn active_producers(&self) -> u16 {
@@ -199,7 +225,7 @@ where
     /// # Returns
     /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
     fn claim_prod(&self, n: u32) -> Claim {
-        let mut old_head = self.prod_headtail.load_head(Release);
+        let mut old_head = self.prod_headtail.load_head(Relaxed);
 
         loop {
             // Ensure the head is read before the tail
@@ -211,6 +237,7 @@ where
             let entries = N as u32 + cons_tail - old_head;
 
             if entries == 0 {
+                cold_path();
                 return Claim::zero();
             }
 
@@ -223,7 +250,10 @@ where
                     .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
                 {
                     Ok(_) => return Claim::many(n, old_head),
-                    Err(x) => old_head = x,
+                    Err(x) => {
+                        cold_path();
+                        old_head = x;
+                    }
                 }
             } else {
                 self.prod_headtail.store_head(new_head, Relaxed);
@@ -237,7 +267,59 @@ where
                 .wait_until_equal_tail(claim.start, Relaxed);
         }
 
-        self.prod_headtail.store_tail(claim.new_tail(N), Relaxed);
+        self.prod_headtail
+            .store_tail(claim.new_tail::<N>(), Relaxed);
+    }
+
+    /// Move the consumers head to get `n` entries.
+    ///
+    /// # Returns
+    /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
+    fn claim_cons(&self, n: u32) -> Claim {
+        let mut old_head = self.cons_headtail.load_head(Release);
+
+        loop {
+            // Ensure the head is read before the tail
+            fence(Acquire);
+
+            // load-acquire synchronize with store-release of cons_update_tail
+            let prod_tail = self.prod_headtail.load_tail(Acquire);
+
+            let entries = N as u32 + prod_tail - old_head;
+
+            if entries == 0 {
+                cold_path();
+                return Claim::zero();
+            }
+
+            let n = n.min(entries);
+
+            let new_head = old_head + n;
+            if S::IS_MULTI {
+                match self
+                    .cons_headtail
+                    .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
+                {
+                    Ok(_) => return Claim::many(n, old_head),
+                    Err(x) => {
+                        cold_path();
+                        old_head = x;
+                    }
+                }
+            } else {
+                self.cons_headtail.store_head(new_head, Relaxed);
+            }
+        }
+    }
+
+    fn return_claim_cons(&self, claim: Claim) {
+        if R::IS_MULTI {
+            self.cons_headtail
+                .wait_until_equal_tail(claim.start, Relaxed);
+        }
+
+        self.cons_headtail
+            .store_tail(claim.new_tail::<N>(), Relaxed);
     }
 
     /// Get a mutable pointer to the data part of the ring.
@@ -256,12 +338,14 @@ where
         let claim = self.claim_prod(values.len() as u32);
 
         if claim.entries() == 0 {
+            cold_path();
             if self.active_consumers() == 0 {
+                cold_path();
                 return Err(Error::Closed);
-            } else {
-                return Err(Error::Full);
             }
+            return Err(Error::Full);
         } else if Q::FIXED && claim.entries() != values.len() as u32 {
+            cold_path();
             return Err(Error::NotEnoughSpace);
         }
 
@@ -270,6 +354,7 @@ where
         for (i, value) in values.take(claim.entries() as usize).enumerate() {
             let mut offset = i + claim.start() as usize;
             if offset >= N {
+                cold_path();
                 offset = 0;
             }
             unsafe {
@@ -282,6 +367,27 @@ where
         self.return_claim_prod(claim);
 
         Ok(n)
+    }
+
+    pub fn try_dequeue<Q>(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error>
+    where
+        Q: QueueBehaviour,
+    {
+        let claim = self.claim_cons(n as u32);
+
+        if claim.entries() == 0 {
+            cold_path();
+            if self.active_producers() == 0 {
+                cold_path();
+                return Err(Error::Closed);
+            }
+            return Err(Error::Empty);
+        } else if Q::FIXED && claim.entries() != n as u32 {
+            cold_path();
+            return Err(Error::NotEnoughItems);
+        }
+
+        unsafe { Ok(RecvValues::new(self, claim)) }
     }
 }
 
@@ -312,15 +418,14 @@ impl Claim {
         self.start
     }
 
-    const fn new_tail(self, capacity: usize) -> u32 {
-        let new = self.start + self.entries;
+    const fn new_tail<const N: usize>(self) -> u32 {
+        let new = self.start as u64 + self.entries as u64;
         let _dont_drop_self = ManuallyDrop::new(self);
-        let capacity = capacity as u32;
-        if new > capacity {
-            // TODO: This goes wrong in the overflow
-            new - capacity
+        if new > N as u64 {
+            cold_path();
+            (new - N as u64) as u32
         } else {
-            new
+            new as u32
         }
     }
 }
@@ -329,10 +434,10 @@ impl Drop for Claim {
     fn drop(&mut self) {
         // The Claim should always be consumed by `new_tail`, which uses ManuallyDrop.
         // The assert does not trigger if the thread is already panicking.
-        assert!(
-            std::thread::panicking(),
-            "Claim was dropped before being returned"
-        );
+        if !std::thread::panicking() {
+            cold_path();
+            panic!("Claim was dropped before being returned");
+        }
     }
 }
 
@@ -352,6 +457,11 @@ impl QueueBehaviour for VariableQueue {
     const FIXED: bool = false;
 }
 
+/// A view into a part of the channel.
+///
+/// The items can be consumed by using its iterator implementation.
+/// If this is dropped before being fully consumed, the items it can view
+/// will also be dropped.
 pub struct RecvValues<const N: usize, T, P, C, S, R>
 where
     P: HeadTail,
@@ -360,7 +470,11 @@ where
     R: IsMulti,
 {
     claim_and_ring: Option<(Claim, *const Ring<N, T, P, C, S, R>)>,
-    index: u32,
+    /// The amount of items already consumed
+    consumed: u32,
+    /// Offset (in amount of `T`) in `Ring::data()` where the next item is.
+    ///
+    /// This must always be valid while `claim_and_ring` is `Some`.
     offset: u32,
 }
 
@@ -371,11 +485,21 @@ where
     S: IsMulti,
     R: IsMulti,
 {
-    fn new(ring: *const Ring<N, T, P, C, S, R>, claim: Claim) -> Self {
+    /// Create a new value iterator.
+    ///
+    /// # Safety
+    /// `Claim` *must* contain non-zero entries.
+    unsafe fn new(ring: *const Ring<N, T, P, C, S, R>, claim: Claim) -> Self {
         let offset = claim.start();
+        unsafe {
+            // This will become reachable if we start poisoning the channel
+            (&*ring)
+                .register_consumer()
+                .unwrap_or_else(|_| unreachable!());
+        }
         Self {
             claim_and_ring: Some((claim, ring)),
-            index: 0,
+            consumed: 0,
             offset,
         }
     }
@@ -391,15 +515,96 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((_claim, ring)) = &self.claim_and_ring {
-            // SAFETY: ring is initialized and aligned otherwise this type can't be created
-            let ring = unsafe { &**ring };
+        if let Some((claim, ring)) = self.claim_and_ring.take() {
+            // SAFETY: RecvValues is registered as a consumer, so ring cannot be dropped until we say so
+            let ring_ref = unsafe { &*ring };
             // SAFETY: We have a Claim to a part of the data and only access that part
-            let data = unsafe { ring.data() };
-
-            todo!()
+            let data = unsafe { ring_ref.data().add(self.offset as usize) };
+            // SAFETY: The Claim guarantees that there is a valid, initialized item at data
+            let value = unsafe { data.read().assume_init() };
+            self.consumed += 1;
+            self.offset += 1;
+            if self.offset as usize >= N {
+                cold_path();
+                self.offset = 0;
+            }
+            if self.consumed > claim.entries() {
+                cold_path();
+                ring_ref.return_claim_cons(claim);
+                if ring_ref.unregister_consumer() {
+                    // Drop the ring as we're the last
+                    unsafe { Ring::cleanup(ring) }
+                }
+            } else {
+                self.claim_and_ring = Some((claim, ring));
+            }
+            Some(value)
         } else {
+            cold_path();
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = if let Some((claim, _)) = &self.claim_and_ring {
+            (claim.entries() - self.offset) as usize
+        } else {
+            cold_path();
+            0
+        };
+        (left, Some(left))
+    }
+}
+
+impl<const N: usize, T, P, C, S, R> Drop for RecvValues<N, T, P, C, S, R>
+where
+    P: HeadTail,
+    C: HeadTail,
+    S: IsMulti,
+    R: IsMulti,
+{
+    fn drop(&mut self) {
+        if let Some((claim, ring)) = self.claim_and_ring.take() {
+            let ring = unsafe { &*ring };
+
+            while self.consumed != claim.entries() {
+                // SAFETY: We have a Claim to a part of the data and only access that part
+                let data = unsafe { ring.data().add(self.offset as usize) };
+                // SAFETY: The Claim guarantees that there is a valid, initialized item at data
+                unsafe { data.read().assume_init_drop() };
+                self.consumed += 1;
+                self.offset += 1;
+                if self.offset as usize >= N {
+                    cold_path();
+                    self.offset = 0;
+                }
+            }
+
+            ring.return_claim_cons(claim);
+            if ring.unregister_consumer() {
+                // Drop the ring as we're the last
+                unsafe { Ring::cleanup(ring) };
+            }
+        }
+    }
+}
+
+impl<const N: usize, T, P, C, S, R> ExactSizeIterator for RecvValues<N, T, P, C, S, R>
+where
+    P: HeadTail,
+    C: HeadTail,
+    S: IsMulti,
+    R: IsMulti,
+{
+}
+
+#[cfg(feature = "trusted_len")]
+// SAFETY: The ExactSizeIterator implementation is always accurate
+unsafe impl<const N: usize, T, P, C, S, R> std::iter::TrustedLen for RecvValues<N, T, P, C, S, R>
+where
+    P: HeadTail,
+    C: HeadTail,
+    S: IsMulti,
+    R: IsMulti,
+{
 }
