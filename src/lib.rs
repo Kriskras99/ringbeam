@@ -10,7 +10,7 @@ mod ring;
 pub use consumer::Receiver;
 pub use headtail::{HeadTail, HeadTailSync, RelaxedTailSync, TailSync};
 pub use producer::Sender;
-pub use ring::{Multi, Single};
+pub use ring::{Multi, Single, recv_values::RecvValues};
 
 use crate::ring::{IsMulti, Ring};
 use thiserror::Error;
@@ -60,6 +60,12 @@ mod hint {
 pub enum Error {
     #[error("Channel is closed")]
     Closed,
+    #[error("Channel is poisoned")]
+    Poisoned,
+    #[error("Maximum amount of producers in channel has been reached")]
+    TooManyProducers,
+    #[error("Maximum amount of consumers in channel has been reached")]
+    TooManyConsumers,
     #[error("Channel is full")]
     Full,
     #[error("Channel is empty")]

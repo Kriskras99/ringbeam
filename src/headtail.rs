@@ -38,6 +38,13 @@ impl HeadTailInner for TailSync {
     fn store_tail(&self, tail: u32, order: Ordering) {
         self.tail.store(tail, order);
     }
+    fn mark_finished(&self) {
+        let res = self.tail.fetch_or(0x8000_0000, Ordering::SeqCst);
+        assert_eq!(res & 0x8000_0000, 0, "Tail was already marked as finished!");
+    }
+    fn is_finished(&self) -> bool {
+        self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
+    }
 }
 #[derive(Default)]
 pub struct RelaxedTailSync {
@@ -76,6 +83,13 @@ impl HeadTailInner for RelaxedTailSync {
 
     fn store_tail(&self, tail: u32, order: Ordering) {
         self.tail.store(tail, order);
+    }
+    fn mark_finished(&self) {
+        let res = self.tail.fetch_or(0x8000_0000, Ordering::SeqCst);
+        assert_eq!(res & 0x8000_0000, 0, "Tail was already marked as finished!");
+    }
+    fn is_finished(&self) -> bool {
+        self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
     }
 }
 
@@ -117,6 +131,13 @@ impl HeadTailInner for HeadTailSync {
     fn store_tail(&self, tail: u32, order: Ordering) {
         self.tail.store(tail, order);
     }
+    fn mark_finished(&self) {
+        let res = self.tail.fetch_or(0x8000_0000, Ordering::SeqCst);
+        assert_eq!(res & 0x8000_0000, 0, "Tail was already marked as finished!");
+    }
+    fn is_finished(&self) -> bool {
+        self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
+    }
 }
 pub trait HeadTailInner: Default {
     /// Load the head with the given order.
@@ -133,6 +154,8 @@ pub trait HeadTailInner: Default {
     ) -> Result<u32, u32>;
     fn wait_until_equal_tail(&self, expected: u32, order: Ordering);
     fn store_tail(&self, tail: u32, order: Ordering);
+    fn mark_finished(&self);
+    fn is_finished(&self) -> bool;
 }
 
 pub trait HeadTail: HeadTailInner {}

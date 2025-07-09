@@ -36,7 +36,13 @@ pub fn test_spsc_try_send_recv_interleaved() {
     });
     let handle2 = thread::spawn(move || {
         for i in 0..100 {
-            sender.try_send(i).unwrap();
+            loop {
+                match sender.try_send(i) {
+                    Ok(None) => break,
+                    Ok(_) => thread::yield_now(),
+                    Err(err) => panic!("{err:?}"),
+                }
+            }
         }
     });
     handle.join().unwrap();

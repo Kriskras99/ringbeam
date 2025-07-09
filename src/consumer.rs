@@ -1,7 +1,8 @@
-use crate::ring::{FixedQueue, IsMulti, RecvValues, Ring, VariableQueue};
+use crate::ring::{
+    FixedQueue, IsMulti, Ring, VariableQueue, active::Last, recv_values::RecvValues,
+};
 use crate::{Error, HeadTail, Multi, cold_path};
-use std::sync::atomic::Ordering::SeqCst;
-use std::sync::atomic::fence;
+use std::thread::panicking;
 
 pub struct Receiver<const N: usize, T, P, C, S, R>
 where
@@ -117,11 +118,26 @@ where
     R: IsMulti,
 {
     fn drop(&mut self) {
-        fence(SeqCst);
-        // TODO: Poison the ring if panicking
-        unsafe {
-            if (*self.ring).unregister_consumer() {
-                Ring::cleanup(self.ring);
+        if panicking() {
+            unsafe {
+                // SAFETY: Ring is valid before we call unregister_consumer
+                (*self.ring).poison();
+            }
+        } else {
+            // SAFETY: Ring is valid before we call unregister_consumer
+            match unsafe { (*self.ring).unregister_consumer().unwrap() } {
+                Last::InCategory => {
+                    // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
+                    // wait for the tail being marked.
+                    unsafe {
+                        (*self.ring).mark_cons_finished();
+                    }
+                }
+                Last::InRing => {
+                    // Drop the ring as we're last
+                    unsafe { Ring::cleanup(self.ring) }
+                }
+                Last::NotLast => {}
             }
         }
     }

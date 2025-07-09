@@ -1,5 +1,6 @@
-use crate::ring::{FixedQueue, IsMulti, Ring, VariableQueue};
+use crate::ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last};
 use crate::{Error, HeadTail, Multi, cold_path};
+use std::thread::panicking;
 
 pub struct Sender<const N: usize, T, P, C, S, R>
 where
@@ -129,10 +130,26 @@ where
     R: IsMulti,
 {
     fn drop(&mut self) {
-        // TODO: Poison the ring if panicking
-        unsafe {
-            if (*self.ring).unregister_producer() {
-                Ring::cleanup(self.ring);
+        if panicking() {
+            unsafe {
+                // SAFETY: Ring is valid before we call unregister_producer
+                (*self.ring).poison();
+            }
+        } else {
+            // SAFETY: Ring is valid before we call unregister_producer
+            match unsafe { (*self.ring).unregister_producer().unwrap() } {
+                Last::InCategory => {
+                    // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
+                    // wait for the tail being marked.
+                    unsafe {
+                        (*self.ring).mark_prod_finished();
+                    }
+                }
+                Last::InRing => {
+                    // Drop the ring as we're last
+                    unsafe { Ring::cleanup(self.ring) }
+                }
+                Last::NotLast => {}
             }
         }
     }
