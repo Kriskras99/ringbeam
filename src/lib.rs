@@ -21,12 +21,39 @@ use std::hint::cold_path;
 const fn cold_path() {}
 
 #[cfg(feature = "loom")]
-mod atomics {
+mod atomic {
     pub use loom::sync::atomic::{AtomicU32, Ordering, fence};
 }
 #[cfg(not(feature = "loom"))]
-mod atomics {
+mod atomic {
     pub use std::sync::atomic::{AtomicU32, Ordering, fence};
+}
+
+#[cfg(feature = "loom")]
+mod alloc {
+    pub use loom::alloc::{Layout, alloc, dealloc};
+}
+#[cfg(not(feature = "loom"))]
+mod alloc {
+    pub use std::alloc::{Layout, alloc, dealloc};
+}
+
+#[cfg(feature = "loom")]
+mod cell {
+    pub use loom::cell::UnsafeCell;
+}
+#[cfg(not(feature = "loom"))]
+mod cell {
+    pub use std::cell::UnsafeCell;
+}
+
+#[cfg(feature = "loom")]
+mod hint {
+    pub use loom::hint::spin_loop;
+}
+#[cfg(not(feature = "loom"))]
+mod hint {
+    pub use std::hint::spin_loop;
 }
 
 #[derive(Debug, Error)]

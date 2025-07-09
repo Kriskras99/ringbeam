@@ -1,5 +1,7 @@
 use crate::ring::{FixedQueue, IsMulti, RecvValues, Ring, VariableQueue};
 use crate::{Error, HeadTail, Multi, cold_path};
+use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::fence;
 
 pub struct Receiver<const N: usize, T, P, C, S, R>
 where
@@ -56,7 +58,11 @@ where
     /// Try to get one item from the channel.
     pub fn try_recv(&self) -> Result<T, Error> {
         match self.try_recv_bulk(1) {
-            Ok(mut res) => Ok(res.next().unwrap_or_else(|| unreachable!())),
+            Ok(mut res) => {
+                let value = res.next().unwrap_or_else(|| unreachable!());
+                drop(res);
+                Ok(value)
+            }
             Err(e) => {
                 cold_path();
                 Err(e)
@@ -111,6 +117,7 @@ where
     R: IsMulti,
 {
     fn drop(&mut self) {
+        fence(SeqCst);
         // TODO: Poison the ring if panicking
         unsafe {
             if (*self.ring).unregister_consumer() {

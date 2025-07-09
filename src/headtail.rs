@@ -1,4 +1,4 @@
-use crate::atomics::{AtomicU32, Ordering};
+use crate::atomic::{AtomicU32, Ordering};
 
 #[derive(Default)]
 pub struct TailSync {
@@ -31,7 +31,7 @@ impl HeadTailInner for TailSync {
 
     fn wait_until_equal_tail(&self, expected: u32, order: Ordering) {
         while self.tail.load(order) != expected {
-            std::hint::spin_loop();
+            crate::hint::spin_loop();
         }
     }
 
@@ -70,7 +70,7 @@ impl HeadTailInner for RelaxedTailSync {
 
     fn wait_until_equal_tail(&self, expected: u32, order: Ordering) {
         while self.tail.load(order) != expected {
-            std::hint::spin_loop();
+            crate::hint::spin_loop();
         }
     }
 
@@ -110,7 +110,7 @@ impl HeadTailInner for HeadTailSync {
 
     fn wait_until_equal_tail(&self, expected: u32, order: Ordering) {
         while self.tail.load(order) != expected {
-            std::hint::spin_loop();
+            crate::hint::spin_loop();
         }
     }
 

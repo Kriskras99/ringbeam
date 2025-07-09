@@ -1,13 +1,13 @@
-use crate::atomics::{
+use crate::atomic::{
     AtomicU32,
-    Ordering::{Acquire, Relaxed, Release, SeqCst},
+    Ordering::{Acquire, Relaxed, SeqCst},
     fence,
 };
 use crate::cache_padded::CachePadded;
+use crate::cell::UnsafeCell;
 use crate::consumer::Receiver;
 use crate::producer::Sender;
 use crate::{Error, HeadTail, cold_path};
-use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit, offset_of};
 
@@ -68,14 +68,14 @@ where
         // Check input
         const {
             assert!(
-                N != 0 && N.checked_add(1).unwrap().is_power_of_two() && N <= u32::MAX as usize,
-                "Requested capacity was not equal to `2.pow(n)-1` where `n >= 1`"
+                N >= 2 && N.is_power_of_two() && N <= u32::MAX as usize,
+                "Requested capacity was not a power of two"
             );
         }
 
         // Allocate the ring
-        let layout = std::alloc::Layout::new::<Self>();
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let layout = crate::alloc::Layout::new::<Self>();
+        let ptr = unsafe { crate::alloc::alloc(layout) };
         if ptr.is_null() {
             cold_path();
             std::alloc::handle_alloc_error(layout);
@@ -118,33 +118,35 @@ where
     /// Deallocate the ringbuffer.
     ///
     /// # Safety
-    /// The caller *must* be the last with access to the ring (i.e. `Self::active_consumers + Self::active_producers == 1`).
+    /// The caller *must* be the last with access to the ring and already unregistered (i.e. `self.active == 0`).
     pub unsafe fn cleanup(ring: *const Self) {
-        assert!(
-            unsafe { (&*ring).active_consumers() + (&*ring).active_producers() } == 1,
-            "Still more than one active consumer + producer"
+        assert_eq!(
+            unsafe { (&*ring).active.load(Relaxed) },
+            0,
+            "Still active consumers and or producers"
         );
-        let layout = std::alloc::Layout::new::<Self>();
-        unsafe { std::alloc::dealloc(ring.cast::<u8>().cast_mut(), layout) };
+        let layout = crate::alloc::Layout::new::<Self>();
+        unsafe { crate::alloc::dealloc(ring.cast::<u8>().cast_mut(), layout) };
     }
 
     pub fn register_producer(&self) -> Result<(), Error> {
         // TODO: This ordering is most likely too strict
         self.active
             .fetch_update(SeqCst, SeqCst, |old| {
-                if old & 0xFFFF_0000 == 0 || old & 0x0000_FFFF == 0 {
+                let producers = Self::extract_producers(old);
+                if producers == 0 {
+                    // There are no producers left, so ring is shutting down
                     cold_path();
                     None
-                } else if old & 0xFFFF_0000 == 0xFFFF_0000 {
+                } else if producers == u16::MAX {
                     cold_path();
                     panic!("Too many producers, would overflow!");
                 } else {
                     // Saturating add for only the producer bytes
-                    let p = ((old >> 16) as u16) + 1;
-                    Some((old & 0x0000_FFFF) | ((p as u32) << 16))
+                    Some(Self::add_producer(old))
                 }
             })
-            .map(|_| ())
+            .map(|_old| ())
             .map_err(|_| Error::Closed)
     }
 
@@ -152,19 +154,20 @@ where
         // TODO: This ordering is most likely too strict
         self.active
             .fetch_update(SeqCst, SeqCst, |old| {
-                if old & 0xFFFF_0000 == 0 || old & 0x0000_FFFF == 0 {
+                let consumers = Self::extract_consumers(old);
+                if consumers == 0 {
+                    // There are no producers left, so ring is shutting down
                     cold_path();
                     None
-                } else if old & 0x0000_FFFF == 0x0000_FFFF {
+                } else if consumers == u16::MAX {
                     cold_path();
-                    panic!("Too many consumers, would overflow!");
+                    panic!("Too many producers, would overflow!");
                 } else {
                     // Saturating add for only the consumer bytes
-                    let p = ((old & 0xFFFF) as u16).saturating_add(1);
-                    Some((old & 0xFFFF_0000) | (p as u32))
+                    Some(Self::add_consumer(old))
                 }
             })
-            .map(|_| ())
+            .map(|_old| ())
             .map_err(|_| Error::Closed)
     }
 
@@ -174,19 +177,18 @@ where
         let old = self
             .active
             .fetch_update(SeqCst, SeqCst, |old| {
-                if (old & 0xFFFF_0000) == 0 {
+                let producers = Self::extract_producers(old);
+                if producers == 0 {
                     cold_path();
                     panic!("Active producers is zero but trying to unregister an active producer");
                 } else {
-                    // Sub for only the producer bytes
-                    let p = ((old >> 16) as u16) - 1;
-                    Some((old & 0x0000_FFFF) | ((p as u32) << 16))
+                    Some(Self::sub_producer(old))
                 }
             })
             .unwrap_or_else(|_| unreachable!());
         // The previous value had one producer remaining, so that is now zero.
-        // So the ring is completely closed and the caller should cleanup.
-        old == 0x0000_0001
+        // So the ring is completely closed and the caller should cleanup.s
+        old == 0x0001_0000
     }
 
     /// Unregister an active consumer, returning `true` if it was the last one.
@@ -195,13 +197,13 @@ where
         let old = self
             .active
             .fetch_update(SeqCst, SeqCst, |old| {
-                if (old & 0x0000_FFFF) == 0 {
+                let consumers = Self::extract_consumers(old);
+                if consumers == 0 {
                     cold_path();
                     panic!("Active consumers is zero but trying to unregister an active consumer");
                 } else {
                     // Sub for only the consumer bytes
-                    let p = ((old & 0xFFFF) as u16) - 1;
-                    Some((old & 0xFFFF_0000) | (p as u32))
+                    Some(Self::sub_consumer(old))
                 }
             })
             .unwrap_or_else(|_| unreachable!());
@@ -212,19 +214,46 @@ where
 
     pub fn active_producers(&self) -> u16 {
         // TODO: This ordering is most likely too strict
-        (self.active.load(SeqCst) >> 16) as u16
+        Self::extract_producers(self.active.load(SeqCst))
     }
 
     pub fn active_consumers(&self) -> u16 {
         // TODO: This ordering is most likely too strict
-        (self.active.load(SeqCst) & 0xFFFF) as u16
+        Self::extract_consumers(self.active.load(SeqCst))
+    }
+
+    const fn extract_consumers(active: u32) -> u16 {
+        (active & 0xFFFF) as u16
+    }
+
+    const fn extract_producers(active: u32) -> u16 {
+        (active >> 16) as u16
+    }
+
+    const fn add_consumer(active: u32) -> u32 {
+        active.saturating_add(1)
+    }
+
+    const fn add_producer(active: u32) -> u32 {
+        (active & 0x0000_FFFF) | ((((active >> 16) as u16).saturating_add(1) as u32) << 16)
+    }
+
+    const fn sub_consumer(active: u32) -> u32 {
+        active - 1
+    }
+
+    const fn sub_producer(active: u32) -> u32 {
+        (active & 0x0000_FFFF) | (((active >> 16) - 1) << 16)
     }
 
     /// Move the producers head to get `n` entries.
     ///
     /// # Returns
     /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
-    fn claim_prod(&self, n: u32) -> Claim {
+    fn claim_prod<Q>(&self, n: u32) -> Result<Claim, Error>
+    where
+        Q: QueueBehaviour,
+    {
         let mut old_head = self.prod_headtail.load_head(Relaxed);
 
         loop {
@@ -234,22 +263,25 @@ where
             // load-acquire synchronize with store-release of cons_update_tail
             let cons_tail = self.cons_headtail.load_tail(Acquire);
 
-            let entries = N as u32 + cons_tail - old_head;
+            let entries = Self::uninitialized_entries(old_head, cons_tail);
 
             if entries == 0 {
                 cold_path();
-                return Claim::zero();
+                return Ok(Claim::zero());
+            } else if Q::FIXED && n > entries {
+                cold_path();
+                return Err(Error::NotEnoughSpace);
             }
 
             let n = n.min(entries);
 
-            let new_head = old_head + n;
+            let new_head = (old_head + n) & (N - 1) as u32;
             if S::IS_MULTI {
                 match self
                     .prod_headtail
                     .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
                 {
-                    Ok(_) => return Claim::many(n, old_head),
+                    Ok(_) => return Ok(Claim::many(n, old_head)),
                     Err(x) => {
                         cold_path();
                         old_head = x;
@@ -257,6 +289,7 @@ where
                 }
             } else {
                 self.prod_headtail.store_head(new_head, Relaxed);
+                return Ok(Claim::many(n, old_head));
             }
         }
     }
@@ -275,8 +308,11 @@ where
     ///
     /// # Returns
     /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
-    fn claim_cons(&self, n: u32) -> Claim {
-        let mut old_head = self.cons_headtail.load_head(Release);
+    fn claim_cons<Q>(&self, n: u32) -> Result<Claim, Error>
+    where
+        Q: QueueBehaviour,
+    {
+        let mut old_head = self.cons_headtail.load_head(Relaxed);
 
         loop {
             // Ensure the head is read before the tail
@@ -285,22 +321,22 @@ where
             // load-acquire synchronize with store-release of cons_update_tail
             let prod_tail = self.prod_headtail.load_tail(Acquire);
 
-            let entries = N as u32 + prod_tail - old_head;
+            let entries = Self::initialized_entries(old_head, prod_tail);
 
             if entries == 0 {
                 cold_path();
-                return Claim::zero();
+                return Ok(Claim::zero());
             }
 
             let n = n.min(entries);
 
-            let new_head = old_head + n;
+            let new_head = (old_head + n) & (N - 1) as u32;
             if S::IS_MULTI {
                 match self
                     .cons_headtail
                     .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
                 {
-                    Ok(_) => return Claim::many(n, old_head),
+                    Ok(_) => return Ok(Claim::many(n, old_head)),
                     Err(x) => {
                         cold_path();
                         old_head = x;
@@ -308,6 +344,7 @@ where
                 }
             } else {
                 self.cons_headtail.store_head(new_head, Relaxed);
+                return Ok(Claim::many(n, old_head));
             }
         }
     }
@@ -335,18 +372,23 @@ where
         I: Iterator<Item = T> + ExactSizeIterator,
         Q: QueueBehaviour,
     {
-        let claim = self.claim_prod(values.len() as u32);
+        let claim = match self.claim_prod::<Q>(values.len() as u32) {
+            Ok(claim) => claim,
+            Err(err) => {
+                cold_path();
+                return Err(err);
+            }
+        };
 
         if claim.entries() == 0 {
             cold_path();
-            if self.active_consumers() == 0 {
-                cold_path();
-                return Err(Error::Closed);
-            }
+            // TODO: This is racing. Entries can be zero because cons == prod, then cons can advance and
+            // drop before this is checked
+            // if self.active_consumers() == 0 {
+            //     cold_path();
+            //     return Err(Error::Closed);
+            // }
             return Err(Error::Full);
-        } else if Q::FIXED && claim.entries() != values.len() as u32 {
-            cold_path();
-            return Err(Error::NotEnoughSpace);
         }
 
         // SAFETY: We have a Claim to a part of the data and only access that part
@@ -355,7 +397,7 @@ where
             let mut offset = i + claim.start() as usize;
             if offset >= N {
                 cold_path();
-                offset = 0;
+                offset -= N;
             }
             unsafe {
                 data.add(offset).write(MaybeUninit::new(value));
@@ -373,14 +415,22 @@ where
     where
         Q: QueueBehaviour,
     {
-        let claim = self.claim_cons(n as u32);
+        let claim = match self.claim_cons::<Q>(n as u32) {
+            Ok(claim) => claim,
+            Err(err) => {
+                cold_path();
+                return Err(err);
+            }
+        };
 
         if claim.entries() == 0 {
             cold_path();
-            if self.active_producers() == 0 {
-                cold_path();
-                return Err(Error::Closed);
-            }
+            // TODO: This is racing. Entries can be zero because cons == prod, then prod can advance and
+            // drop before this is checked
+            // if self.active_producers() == 0 {
+            //     cold_path();
+            //     return Err(Error::Closed);
+            // }
             return Err(Error::Empty);
         } else if Q::FIXED && claim.entries() != n as u32 {
             cold_path();
@@ -389,9 +439,18 @@ where
 
         unsafe { Ok(RecvValues::new(self, claim)) }
     }
+
+    const fn initialized_entries(cons_head: u32, prod_tail: u32) -> u32 {
+        prod_tail.wrapping_sub(cons_head) & (N as u32 - 1)
+    }
+
+    const fn uninitialized_entries(prod_head: u32, cons_tail: u32) -> u32 {
+        (N as u32 - 1 + cons_tail).wrapping_sub(prod_head) & (N as u32 - 1)
+    }
 }
 
 pub struct Claim {
+    // TODO: Maybe make nonzero?
     entries: u32,
     start: u32,
 }
@@ -432,9 +491,9 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        // The Claim should always be consumed by `new_tail`, which uses ManuallyDrop.
-        // The assert does not trigger if the thread is already panicking.
-        if !std::thread::panicking() {
+        // The Claim should always be consumed by `new_tail` if it has at least one entry.
+        // `new_tail` doesn't cause a drop because it uses ManuallyDrop.
+        if self.entries != 0 && !std::thread::panicking() {
             cold_path();
             panic!("Claim was dropped before being returned");
         }
@@ -490,13 +549,14 @@ where
     /// # Safety
     /// `Claim` *must* contain non-zero entries.
     unsafe fn new(ring: *const Ring<N, T, P, C, S, R>, claim: Claim) -> Self {
-        let offset = claim.start();
+        fence(SeqCst);
         unsafe {
             // This will become reachable if we start poisoning the channel
             (&*ring)
                 .register_consumer()
                 .unwrap_or_else(|_| unreachable!());
         }
+        let offset = claim.start();
         Self {
             claim_and_ring: Some((claim, ring)),
             consumed: 0,
@@ -528,7 +588,7 @@ where
                 cold_path();
                 self.offset = 0;
             }
-            if self.consumed > claim.entries() {
+            if self.consumed >= claim.entries() {
                 cold_path();
                 ring_ref.return_claim_cons(claim);
                 if ring_ref.unregister_consumer() {
