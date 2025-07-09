@@ -1,5 +1,7 @@
-use crate::ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last};
-use crate::{Error, HeadTail, Multi, cold_path};
+use crate::{
+    Error, HeadTail, Multi, cold_path,
+    ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last},
+};
 use std::thread::panicking;
 
 pub struct Sender<const N: usize, T, P, C, S, R>
@@ -56,9 +58,9 @@ where
 
     /// Try to put the value in the channel.
     ///
-    /// # Returns
-    /// If successful, `Ok(None)`. If full, `Ok(Some(T))`. Otherwise,
-    /// it returns `Err(Error::Closed)` or `Err(Error::Poisoned)`.
+    /// # Errors
+    /// Returns [`Ok(Some(T))`] when full, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     pub fn try_send(&self, value: T) -> Result<Option<T>, Error> {
         let mut once = std::iter::once(value);
         match self.try_send_bulk(&mut once) {
@@ -77,8 +79,15 @@ where
 
     /// Try to put all values into the channel or none at all.
     ///
+    /// To put as many values in the channel as possible, see [`try_send_burst`](Self::try_send_burst).
+    ///
     /// # Returns
-    /// The amount of values written
+    /// The amount of values written.
+    ///
+    /// # Errors
+    /// Returns [`Error::Full`] when full, [`Error::NotEnoughSpace`] if there is space but not
+    /// enough for all items, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     // TODO: The Iterator must be TrustedLen, but that's unstable
     pub fn try_send_bulk<I>(&self, values: &mut I) -> Result<usize, Error>
     where
@@ -95,8 +104,14 @@ where
     ///
     /// The implementation will only consume as many values as it can fit into the channel.
     ///
+    /// To return an error when there is not enough space for all the values, see [`try_send_bulk`](Self::try_send_bulk)
+    ///
     /// # Returns
-    /// The amount of values written
+    /// The amount of values written.
+    ///
+    /// # Errors
+    /// Returns [`Error::Full`] when full, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     // TODO: The Iterator must be TrustedLen, but that's unstable
     pub fn try_send_burst<I>(&self, values: &mut I) -> Result<usize, Error>
     where

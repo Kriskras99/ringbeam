@@ -1,3 +1,5 @@
+#![allow(clippy::missing_panics_doc, reason = "It's a test")]
+
 use ringbeam::Error;
 
 #[cfg(feature = "loom")]
@@ -58,7 +60,7 @@ pub fn test_mpsc_try_send_recv_interleaved_2() {
         loop {
             match receiver.try_recv() {
                 Ok(val) => {
-                    if val % 2 == 0 {
+                    if val.is_multiple_of(2) {
                         assert_eq!(i, val);
                         i += 2;
                     } else {
@@ -76,8 +78,8 @@ pub fn test_mpsc_try_send_recv_interleaved_2() {
     });
     let sender2 = sender.clone();
     let handle2 = thread::spawn(move || {
-        for i in 0..100 {
-            if i % 2 == 0 {
+        for i in 0..100u8 {
+            if i.is_multiple_of(2) {
                 loop {
                     match sender2.try_send(i) {
                         Ok(None) => break,
@@ -89,8 +91,8 @@ pub fn test_mpsc_try_send_recv_interleaved_2() {
         }
     });
     let handle3 = thread::spawn(move || {
-        for i in 0..100 {
-            if i % 2 == 1 {
+        for i in 0..100u8 {
+            if !i.is_multiple_of(2) {
                 loop {
                     match sender.try_send(i) {
                         Ok(None) => break,

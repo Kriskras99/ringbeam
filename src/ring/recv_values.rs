@@ -1,8 +1,9 @@
-use crate::atomic::Ordering::SeqCst;
-use crate::atomic::fence;
-use crate::ring::active::Last;
-use crate::ring::{Claim, IsMulti, Ring};
-use crate::{HeadTail, cold_path};
+use crate::{
+    HeadTail,
+    atomic::{Ordering::SeqCst, fence},
+    cold_path,
+    ring::{Claim, IsMulti, Ring, active::Last},
+};
 
 /// A view into a part of the channel.
 ///

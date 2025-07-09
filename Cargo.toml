@@ -5,6 +5,10 @@ edition = "2024"
 # Most of it is licensed under BSD-3-Clause because it's based on DPDK
 # but cache_padding.rs is licensed under MIT OR Apache-2.0 as it's from Crossbeam.
 license = "BSD-3-Clause AND (MIT OR Apache-2.0)"
+description = "A blazingly fast channel based on DPDK ringbuffers"
+repository = "https://github.com/kriskras99/ringbeam"
+categories = ["algorithms", "concurrency", "data-structures"]
+keywords = ["channel", "dpdk", "ringbuffer"]
 
 [dependencies]
 thiserror = "2.0.12"
@@ -16,3 +20,14 @@ loom = { version = "0.7.2", optional = true }
 likely = []
 trusted_len = []
 loom = ["dep:loom"]
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# This needs to be done constantly, because N needs to be usize but the calculations u32
+cast_possible_truncation = "allow"
+cast_lossless = "allow"
+# .deref() looks beter than &*
+explicit_deref_methods = "allow"

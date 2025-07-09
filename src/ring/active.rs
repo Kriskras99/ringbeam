@@ -1,8 +1,11 @@
-use crate::atomic::{
-    AtomicU32, Ordering,
-    Ordering::{Relaxed, SeqCst},
+use crate::{
+    Error,
+    atomic::{
+        AtomicU32, Ordering,
+        Ordering::{Relaxed, SeqCst},
+    },
+    cold_path,
 };
-use crate::{Error, cold_path};
 
 /// A counter of active consumers and producers that can be shared between threads.
 ///

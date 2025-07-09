@@ -1,3 +1,5 @@
+#![allow(clippy::missing_panics_doc, reason = "It's a test")]
+
 use ringbeam::Error;
 
 #[cfg(feature = "loom")]

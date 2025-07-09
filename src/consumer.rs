@@ -1,7 +1,7 @@
-use crate::ring::{
-    FixedQueue, IsMulti, Ring, VariableQueue, active::Last, recv_values::RecvValues,
+use crate::{
+    Error, HeadTail, Multi, cold_path,
+    ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last, recv_values::RecvValues},
 };
-use crate::{Error, HeadTail, Multi, cold_path};
 use std::thread::panicking;
 
 pub struct Receiver<const N: usize, T, P, C, S, R>
@@ -57,6 +57,10 @@ where
     }
 
     /// Try to get one item from the channel.
+    ///
+    /// # Errors
+    /// Returns [`Error::Empty`] when empty, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     pub fn try_recv(&self) -> Result<T, Error> {
         match self.try_recv_bulk(1) {
             Ok(mut res) => {
@@ -73,9 +77,16 @@ where
 
     /// Try to get `n` items from the channel or none at all.
     ///
+    /// To get at most `n` items, see [`try_recv_burst`](Self::try_recv_burst).
+    ///
     /// # Returns
     /// An iterator over the items. This iterator is allowed to outlive the receiver.
     /// Dropping the iterator while it still has items, will also drop those items.
+    ///
+    /// # Errors
+    /// Returns [`Error::Empty`] when empty, [`Error::NotEnoughItems`] if there are items but not
+    /// as many as requested, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     pub fn try_recv_bulk(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
@@ -86,9 +97,15 @@ where
 
     /// Try to get at most `n` items from the channel.
     ///
+    /// To get exactly `n` items or none at all, see [`try_recv_bulk`](Self::try_recv_bulk).
+    ///
     /// # Returns
     /// An iterator over the items. This iterator is allowed to outlive the receiver.
     /// Dropping the iterator while it still has items, will also drop those items.
+    ///
+    /// # Errors
+    /// Returns [`Error::Empty`] when empty, [`Error::Closed`] when closed, and [`Error::Poisoned`]
+    /// when the ring is poisoned.
     pub fn try_recv_burst(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.

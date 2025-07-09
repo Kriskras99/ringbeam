@@ -1,5 +1,7 @@
-use std::fmt;
-use std::ops::{Deref, DerefMut};
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 /// Pads and aligns a value to the length of a cache line.
 ///
@@ -168,21 +170,6 @@ impl<T> CachePadded<T> {
     /// ```
     pub const fn new(t: T) -> Self {
         Self { value: t }
-    }
-
-    /// Returns the inner value.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use ringbeam::CachePadded;
-    ///
-    /// let padded_value = CachePadded::new(7);
-    /// let value = padded_value.into_inner();
-    /// assert_eq!(value, 7);
-    /// ```
-    pub fn into_inner(self) -> T {
-        self.value
     }
 }
 

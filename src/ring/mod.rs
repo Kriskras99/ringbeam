@@ -1,33 +1,44 @@
 pub mod active;
 pub mod recv_values;
 
-use crate::atomic::{
-    Ordering::{Acquire, Relaxed, SeqCst},
-    fence,
+use crate::{
+    Error, HeadTail,
+    atomic::{
+        Ordering::{Acquire, Relaxed, SeqCst},
+        fence,
+    },
+    cache_padded::CachePadded,
+    cell::UnsafeCell,
+    cold_path,
+    consumer::Receiver,
+    hint::spin_loop,
+    producer::Sender,
+    ring::{
+        active::{AtomicActive, Last},
+        recv_values::RecvValues,
+    },
+    sealed::Sealed,
 };
-use crate::cache_padded::CachePadded;
-use crate::cell::UnsafeCell;
-use crate::consumer::Receiver;
-use crate::hint::spin_loop;
-use crate::producer::Sender;
-use crate::ring::active::{AtomicActive, Last};
-use crate::ring::recv_values::RecvValues;
-use crate::{Error, HeadTail, cold_path};
-use std::mem::{ManuallyDrop, MaybeUninit, offset_of};
-use std::{marker::PhantomData, ops::Deref};
+use std::{
+    marker::PhantomData,
+    mem::{ManuallyDrop, MaybeUninit, offset_of},
+    ops::Deref,
+};
 
 pub enum Multi {}
+impl Sealed for Multi {}
 impl IsMulti for Multi {
     const IS_MULTI: bool = true;
 }
 
 pub enum Single {}
+impl Sealed for Single {}
 impl IsMulti for Single {
     const IS_MULTI: bool = false;
 }
 
 /// Can more than instance of the sender/receiver exist?
-pub trait IsMulti {
+pub trait IsMulti: Sealed {
     const IS_MULTI: bool;
 }
 

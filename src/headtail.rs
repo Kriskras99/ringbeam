@@ -1,5 +1,14 @@
 use crate::atomic::{AtomicU32, Ordering};
 
+/// The default sync mode for the head and tail.
+///
+/// In this mode, multiple participants can move the head forward and claim a part of the buffer.
+/// To release there claim they need to wait for the tail to move to their claim. If a thread
+/// holds on to a claim for a long time, this will cause a wait in all other threads with later
+/// claims.
+///
+/// This mode is designed for the thread-per-core model and is known to behave poorly in over commited
+/// scenarios.
 #[derive(Default)]
 pub struct TailSync {
     head: AtomicU32,
@@ -46,6 +55,16 @@ impl HeadTailInner for TailSync {
         self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
     }
 }
+impl HeadTail for TailSync {}
+
+/// A sync mode for head and tail that does not require participants to wait on each other.
+///
+/// This mode makes the last thread responsible for updating the tail value, allowing other threads
+/// to continue.
+///
+/// This mode helps to avoid the Lock-Waiter-Preemption (LWP) problem on tail update and improves
+/// average enqueue/dequeue times on overcommitted systems.
+// TODO: Actually implement this
 #[derive(Default)]
 pub struct RelaxedTailSync {
     head: AtomicU32,
@@ -92,7 +111,13 @@ impl HeadTailInner for RelaxedTailSync {
         self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
     }
 }
+impl HeadTail for RelaxedTailSync {}
 
+/// A sync mode for head and tail that only allows one enqueue and one dequeue at a time.
+///
+/// This mode also avoids the Lock-Waiter-Preemption (LWP) problem on tail update and helps to
+/// improve ring enqueue/dequeue behavior in overcommitted scenarios.
+// TODO: Actually implement this
 #[derive(Default)]
 pub struct HeadTailSync {
     head: AtomicU32,
@@ -139,6 +164,8 @@ impl HeadTailInner for HeadTailSync {
         self.tail.load(Ordering::SeqCst) & 0x8000_0000 != 0
     }
 }
+impl HeadTail for HeadTailSync {}
+
 pub trait HeadTailInner: Default {
     /// Load the head with the given order.
     fn load_head(&self, order: Ordering) -> u32;
@@ -159,4 +186,3 @@ pub trait HeadTailInner: Default {
 }
 
 pub trait HeadTail: HeadTailInner {}
-impl<T: HeadTailInner> HeadTail for T {}
