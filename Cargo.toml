@@ -12,14 +12,15 @@ keywords = ["channel", "dpdk", "ringbuffer"]
 
 [dependencies]
 thiserror = "2.0.12"
-loom = { version = "0.7.2", optional = true }
 
 [dev-dependencies]
+
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.7.2" }
 
 [features]
 likely = []
 trusted_len = []
-loom = ["dep:loom"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -31,3 +32,6 @@ cast_possible_truncation = "allow"
 cast_lossless = "allow"
 # .deref() looks beter than &*
 explicit_deref_methods = "allow"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

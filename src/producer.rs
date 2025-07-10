@@ -1,5 +1,6 @@
 use crate::{
-    Error, HeadTail, Multi, cold_path,
+    Error, HeadTail, Multi,
+    hint::cold_path,
     ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last},
 };
 use std::thread::panicking;

@@ -15,45 +15,63 @@ pub use ring::{IsMulti, Multi, Single, recv_values::RecvValues};
 use crate::ring::Ring;
 use thiserror::Error;
 
-#[cfg(feature = "likely")]
-use std::hint::cold_path;
-#[cfg(not(feature = "likely"))]
-const fn cold_path() {}
-
-#[cfg(feature = "loom")]
+#[cfg(loom)]
 mod atomic {
     pub use loom::sync::atomic::{AtomicU32, Ordering, fence};
 }
-#[cfg(not(feature = "loom"))]
+#[cfg(not(loom))]
 mod atomic {
     pub use std::sync::atomic::{AtomicU32, Ordering, fence};
 }
 
-#[cfg(feature = "loom")]
+#[cfg(loom)]
 mod alloc {
     pub use loom::alloc::{Layout, alloc, dealloc};
 }
-#[cfg(not(feature = "loom"))]
+#[cfg(not(loom))]
 mod alloc {
     pub use std::alloc::{Layout, alloc, dealloc};
 }
 
-#[cfg(feature = "loom")]
+#[cfg(loom)]
 mod cell {
     pub use loom::cell::UnsafeCell;
 }
-#[cfg(not(feature = "loom"))]
+#[cfg(not(loom))]
 mod cell {
-    pub use std::cell::UnsafeCell;
+    #[derive(Debug)]
+    #[repr(transparent)]
+    pub struct UnsafeCell<T>(std::cell::UnsafeCell<T>);
+
+    impl<T> UnsafeCell<T> {
+        pub const fn new(data: T) -> Self {
+            Self(std::cell::UnsafeCell::new(data))
+        }
+        pub fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
+            f(self.0.get())
+        }
+
+        pub fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
+            f(self.0.get())
+        }
+    }
 }
 
-#[cfg(feature = "loom")]
+#[cfg(loom)]
 mod hint {
     pub use loom::hint::spin_loop;
+    #[cfg(feature = "likely")]
+    pub use std::hint::cold_path;
+    #[cfg(not(feature = "likely"))]
+    pub const fn cold_path() {}
 }
-#[cfg(not(feature = "loom"))]
+#[cfg(not(loom))]
 mod hint {
+    #[cfg(feature = "likely")]
+    pub use std::hint::cold_path;
     pub use std::hint::spin_loop;
+    #[cfg(not(feature = "likely"))]
+    pub const fn cold_path() {}
 }
 
 mod sealed {

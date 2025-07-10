@@ -4,7 +4,7 @@ use crate::{
         AtomicU32, Ordering,
         Ordering::{Relaxed, SeqCst},
     },
-    cold_path,
+    hint::cold_path,
 };
 
 /// A counter of active consumers and producers that can be shared between threads.

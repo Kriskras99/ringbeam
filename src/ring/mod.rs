@@ -9,9 +9,8 @@ use crate::{
     },
     cache_padded::CachePadded,
     cell::UnsafeCell,
-    cold_path,
     consumer::Receiver,
-    hint::spin_loop,
+    hint::{cold_path, spin_loop},
     producer::Sender,
     ring::{
         active::{AtomicActive, Last},
@@ -20,8 +19,10 @@ use crate::{
     sealed::Sealed,
 };
 use std::{
+    fmt::{Debug, Formatter},
     marker::PhantomData,
     mem::{ManuallyDrop, MaybeUninit, offset_of},
+    num::NonZeroU32,
     ops::Deref,
 };
 
@@ -87,6 +88,8 @@ where
                 N >= 2 && N.is_power_of_two() && N <= u32::MAX as usize,
                 "Requested capacity was not a power of two"
             );
+            // Loom's UnsafeCell type is larger, because it tracks (mutable) references.
+            #[cfg(not(loom))]
             assert!(
                 size_of::<T>() == size_of::<UnsafeCell<MaybeUninit<T>>>(),
                 "Missed optimisation"
@@ -117,8 +120,12 @@ where
             ptr.add(offset_of!(Self, cons_headtail))
                 .cast::<CachePadded<C>>()
                 .write(CachePadded::default());
+            ptr.add(offset_of!(Self, data))
+                .cast::<CachePadded<[UnsafeCell<MaybeUninit<T>>; N]>>()
+                .write(CachePadded::new(std::array::from_fn(|_| {
+                    UnsafeCell::new(MaybeUninit::uninit())
+                })));
             // phantom is a ZST and can not be initialized (and doesn't need to be either)
-            // data is a UnsafeCell<[T; N]> and must not be read when uninitialized
         }
 
         // The ring is now initialized and valid
@@ -202,7 +209,7 @@ where
                     cold_path();
                     return Err(Error::Closed);
                 }
-                return Ok(Claim::zero());
+                return Err(Error::Full);
             } else if Q::FIXED && n > entries {
                 cold_path();
                 return Err(Error::NotEnoughSpace);
@@ -265,7 +272,7 @@ where
                     cold_path();
                     return Err(Error::Closed);
                 }
-                return Ok(Claim::zero());
+                return Err(Error::Empty);
             } else if Q::FIXED && n > entries {
                 cold_path();
                 return Err(Error::NotEnoughItems);
@@ -319,12 +326,7 @@ where
                 return Err(err);
             }
         };
-
-        if claim.entries() == 0 {
-            // TODO: Do this in claim
-            cold_path();
-            return Err(Error::Full);
-        }
+        println!("prod: claim: {claim:?}");
 
         let data = self.data();
         for (i, value) in values.take(claim.entries() as usize).enumerate() {
@@ -335,12 +337,13 @@ where
             }
             // SAFETY: Our Claim gives exclusive access to this index
             unsafe {
-                data[offset].get().write(MaybeUninit::new(value));
+                data[offset].with_mut(|p| p.write(MaybeUninit::new(value)));
             }
         }
 
         let n = claim.entries() as usize;
 
+        println!("prod: return: {claim:?}");
         self.return_claim_prod(claim);
 
         Ok(n)
@@ -357,12 +360,7 @@ where
                 return Err(err);
             }
         };
-
-        if claim.entries() == 0 {
-            cold_path();
-            // TODO: Do this in claim
-            return Err(Error::Empty);
-        }
+        println!("cons: claim: {claim:?}");
 
         unsafe { Ok(RecvValues::new(self, claim)) }
     }
@@ -415,26 +413,30 @@ where
 
 pub struct Claim {
     // TODO: Maybe make nonzero?
-    entries: u32,
+    entries: NonZeroU32,
     start: u32,
 }
 
+impl Debug for Claim {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "Claim {{ entries: {}, start: {}}}",
+            self.entries, self.start
+        ))
+    }
+}
+
 impl Claim {
-    /// An empty claim for when there are no entries available.
-    const fn zero() -> Self {
+    /// A claim for `n` entries at `start`
+    fn many(entries: u32, start: u32) -> Self {
         Self {
-            entries: 0,
-            start: 0,
+            entries: NonZeroU32::new(entries).unwrap_or_else(|| unreachable!()),
+            start,
         }
     }
 
-    /// A claim for `n` entries at `start`
-    const fn many(entries: u32, start: u32) -> Self {
-        Self { entries, start }
-    }
-
     const fn entries(&self) -> u32 {
-        self.entries
+        self.entries.get()
     }
 
     const fn start(&self) -> u32 {
@@ -442,7 +444,7 @@ impl Claim {
     }
 
     const fn new_tail<const N: usize>(self) -> u32 {
-        let new = self.start as u64 + self.entries as u64;
+        let new = self.start as u64 + self.entries.get() as u64;
         let _dont_drop_self = ManuallyDrop::new(self);
         if new >= N as u64 {
             cold_path();
@@ -457,7 +459,7 @@ impl Drop for Claim {
     fn drop(&mut self) {
         // The Claim should always be consumed by `new_tail` if it has at least one entry.
         // `new_tail` doesn't cause a drop because it uses ManuallyDrop.
-        if self.entries != 0 && !std::thread::panicking() {
+        if !std::thread::panicking() {
             cold_path();
             panic!("Claim was dropped before being returned");
         }

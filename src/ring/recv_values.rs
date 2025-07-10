@@ -1,7 +1,7 @@
 use crate::{
     HeadTail,
     atomic::{Ordering::SeqCst, fence},
-    cold_path,
+    hint::cold_path,
     ring::{Claim, IsMulti, Ring, active::Last},
 };
 
@@ -67,14 +67,9 @@ where
         if let Some((claim, ring)) = self.claim_and_ring.take() {
             // SAFETY: RecvValues is registered as a consumer, so ring is a valid reference
             //         The Claim guarantees we have exclusive access to this index and that
-            //         there is a valid, intialized item at the index.
-            let value = unsafe {
-                (*ring).data()[self.offset as usize]
-                    .get()
-                    .cast_const()
-                    .read()
-                    .assume_init()
-            };
+            //         there is a valid, initialized item at the index.
+            let value =
+                unsafe { (*ring).data()[self.offset as usize].with(|p| p.read().assume_init()) };
 
             self.consumed += 1;
             self.offset += 1;
@@ -85,6 +80,7 @@ where
             if self.consumed >= claim.entries() {
                 cold_path();
                 // SAFETY: We haven't deregistered yet
+                println!("cons: return: {claim:?}");
                 unsafe { (*ring).return_claim_cons(claim) };
                 match unsafe { (*ring).unregister_consumer().unwrap() } {
                     Last::InCategory => {
@@ -134,11 +130,7 @@ where
                 // SAFETY: The Claim guarantees we have exclusive access to this index and that
                 //         there is a valid, intialized item at the index.
                 unsafe {
-                    ring.data()[self.offset as usize]
-                        .get()
-                        .cast_const()
-                        .read()
-                        .assume_init_drop();
+                    ring.data()[self.offset as usize].with(|p| p.read().assume_init_drop());
                 };
                 self.consumed += 1;
                 self.offset += 1;
@@ -149,6 +141,7 @@ where
             }
 
             // SAFETY: We haven't deregistered yet
+            println!("cons: return: {claim:?}");
             unsafe { (*ring).return_claim_cons(claim) };
             match unsafe { (*ring).unregister_consumer().unwrap() } {
                 Last::InCategory => {
