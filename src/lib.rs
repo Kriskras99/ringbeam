@@ -1,6 +1,10 @@
 #![cfg_attr(feature = "trusted_len", feature(trusted_len))]
 #![cfg_attr(feature = "likely", feature(cold_path))]
 #![expect(clippy::type_complexity, reason = "This crate is type generics heavy")]
+
+#[cfg(all(feature = "loom", feature = "shuttle"))]
+compile_error!("Features 'loom' and 'shuttle' cannot be enabled at the same time");
+
 mod cache_padded;
 mod consumer;
 mod headtail;
@@ -15,29 +19,33 @@ pub use ring::{IsMulti, Multi, Single, recv_values::RecvValues};
 use crate::ring::Ring;
 use thiserror::Error;
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 mod atomic {
     pub use loom::sync::atomic::{AtomicU32, Ordering, fence};
 }
-#[cfg(not(loom))]
+#[cfg(feature = "shuttle")]
+mod atomic {
+    pub use shuttle::sync::atomic::{AtomicU32, Ordering, fence};
+}
+#[cfg(not(any(feature = "loom", feature = "shuttle")))]
 mod atomic {
     pub use std::sync::atomic::{AtomicU32, Ordering, fence};
 }
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 mod alloc {
     pub use loom::alloc::{Layout, alloc, dealloc};
 }
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 mod alloc {
     pub use std::alloc::{Layout, alloc, dealloc};
 }
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 mod cell {
     pub use loom::cell::UnsafeCell;
 }
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 mod cell {
     #[derive(Debug)]
     #[repr(transparent)]
@@ -57,21 +65,18 @@ mod cell {
     }
 }
 
-#[cfg(loom)]
 mod hint {
+    #[cfg(feature = "loom")]
     pub use loom::hint::spin_loop;
-    #[cfg(feature = "likely")]
-    pub use std::hint::cold_path;
-    #[cfg(not(feature = "likely"))]
-    pub const fn cold_path() {}
-}
-#[cfg(not(loom))]
-mod hint {
-    #[cfg(feature = "likely")]
-    pub use std::hint::cold_path;
+    #[cfg(feature = "shuttle")]
+    pub use shuttle::hint::spin_loop;
+    #[cfg(not(any(feature = "loom", feature = "shuttle")))]
     pub use std::hint::spin_loop;
+
     #[cfg(not(feature = "likely"))]
     pub const fn cold_path() {}
+    #[cfg(feature = "likely")]
+    pub use std::hint::cold_path;
 }
 
 mod sealed {
@@ -83,8 +88,8 @@ mod sealed {
 // TODO: Merge the HeadTail and IsMulti types/traits as the various HeadTail variations are only
 //       relevant in multi scenarios.
 // TODO: Implement peek for single/multi_hts
-// TODO: Use cfg instead of feature for loom. Add UnsafeCell wrapper so it's compatible with Loom's
-//       UnsafeCell
+// TODO: Make testing with loom and shuttle actually work
+// TODO: Maybe repr(c) on Ring, take an extra look at cache alignment.
 
 #[derive(Debug, Error)]
 pub enum Error {

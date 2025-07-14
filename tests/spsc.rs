@@ -2,21 +2,27 @@
 
 use ringbeam::Error;
 
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 mod thread {
     pub use loom::thread::{spawn, yield_now};
 }
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 mod thread {
     pub use std::thread::{spawn, yield_now};
 }
-#[cfg(loom)]
+#[cfg(feature = "loom")]
 use loom::model::model;
-#[cfg(not(loom))]
+#[cfg(not(feature = "loom"))]
 fn model<F>(f: F)
 where
     F: Fn() + Send + Sync + 'static,
 {
+    #[cfg(feature = "shuttle")]
+    {
+        println!("Running in shuttle");
+        shuttle::check_dfs(f, None);
+    }
+    #[cfg(not(feature = "shuttle"))]
     f();
 }
 

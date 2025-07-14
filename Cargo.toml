@@ -12,15 +12,16 @@ keywords = ["channel", "dpdk", "ringbuffer"]
 
 [dependencies]
 thiserror = "2.0.12"
+loom = { version = "0.7.1", default-features = false, features = ["checkpoint"], optional = true }
+shuttle = { version = "0.8.1", default-features = false, features = [], optional = true}
 
 [dev-dependencies]
-
-[target.'cfg(loom)'.dependencies]
-loom = { version = "0.7.2" }
 
 [features]
 likely = []
 trusted_len = []
+loom = ["dep:loom"]
+shuttle = ["dep:shuttle"]
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
