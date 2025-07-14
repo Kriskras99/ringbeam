@@ -2,64 +2,38 @@ pub mod active;
 pub mod recv_values;
 
 use crate::{
-    Error, HeadTail,
-    atomic::{
-        Ordering::{Acquire, Relaxed, SeqCst},
-        fence,
-    },
+    Error,
     cache_padded::CachePadded,
-    cell::UnsafeCell,
     consumer::Receiver,
-    hint::{cold_path, spin_loop},
+    modes::{Claim, Mode},
     producer::Sender,
     ring::{
         active::{AtomicActive, Last},
         recv_values::RecvValues,
     },
-    sealed::Sealed,
+    std::{
+        alloc::{Layout, alloc, dealloc, handle_alloc_error},
+        cell::UnsafeCell,
+        hint::{cold_path, spin_loop},
+        mem::MaybeUninit,
+        sync::atomic::Ordering::SeqCst,
+    },
 };
-use std::{
-    fmt::{Debug, Formatter},
-    marker::PhantomData,
-    mem::{ManuallyDrop, MaybeUninit, offset_of},
-    num::NonZeroU32,
-    ops::Deref,
-};
-
-pub enum Multi {}
-impl Sealed for Multi {}
-impl IsMulti for Multi {
-    const IS_MULTI: bool = true;
-}
-
-pub enum Single {}
-impl Sealed for Single {}
-impl IsMulti for Single {
-    const IS_MULTI: bool = false;
-}
-
-/// Can more than instance of the sender/receiver exist?
-pub trait IsMulti: Sealed {
-    const IS_MULTI: bool;
-}
+use std::{marker::PhantomData, mem::offset_of, num::NonZeroU32, ops::Deref};
 
 /// A ringbuffer.
 ///
 /// # Generics
 /// - `N`, the capacity of the channel. Must be equal to `2.pow(m)-1` where `m >= 1 && m <= 31`.
 /// - `T`, the type of messages that will be sent. `size_of::<T>()` must be a multiple of 4.
-/// - `P`, the mode of head-tail synchronisation of producers, see [`HeadTail`].
-/// - `C`, the mode of head-tail synchronisation of consumers, see [`HeadTail`].
-/// - `S`, the type of sender, see [`Sender`].
-/// - `R`, the type of receiver, see [`Receiver`].
-pub struct Ring<const N: usize, T, P, C, S, R>
+/// - `P`, the mode of head-tail synchronisation of producers, see [`Mode`].
+/// - `C`, the mode of head-tail synchronisation of consumers, see [`Mode`].
+pub struct Ring<const N: usize, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
-    phantom: PhantomData<(T, S, R)>,
+    phantom: PhantomData<T>,
     /// Active producers and consumers.
     ///
     /// Where the first u16 is the producers and the second u16 is the consumers (`0xPPPP_CCCC`).
@@ -69,19 +43,17 @@ where
     data: CachePadded<[UnsafeCell<MaybeUninit<T>>; N]>,
 }
 
-impl<const N: usize, T, P, C, S, R> Ring<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Ring<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     /// Create the ring returning a sender and receiver.
     #[expect(
         clippy::new_ret_no_self,
         reason = "This type should only be used through the sender and receiver"
     )]
-    pub fn new() -> (Sender<N, T, P, C, S, R>, Receiver<N, T, P, C, S, R>) {
+    pub fn new() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>) {
         // Check input
         const {
             assert!(
@@ -89,7 +61,7 @@ where
                 "Requested capacity was not a power of two"
             );
             // Loom's UnsafeCell type is larger, because it tracks (mutable) references.
-            #[cfg(not(loom))]
+            #[cfg(not(any(feature = "loom", feature = "shuttle")))]
             assert!(
                 size_of::<T>() == size_of::<UnsafeCell<MaybeUninit<T>>>(),
                 "Missed optimisation"
@@ -97,11 +69,11 @@ where
         }
 
         // Allocate the ring
-        let layout = crate::alloc::Layout::new::<Self>();
-        let ptr = unsafe { crate::alloc::alloc(layout) };
+        let layout = Layout::new::<Self>();
+        let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
             cold_path();
-            std::alloc::handle_alloc_error(layout);
+            handle_alloc_error(layout);
         }
 
         // Initialize the ring
@@ -163,8 +135,8 @@ where
             }
         };
 
-        let layout = crate::alloc::Layout::new::<Self>();
-        unsafe { crate::alloc::dealloc(ring.cast::<u8>().cast_mut(), layout) };
+        let layout = Layout::new::<Self>();
+        unsafe { dealloc(ring.cast::<u8>().cast_mut(), layout) };
     }
 
     /// Mark the prod tail as finished.
@@ -183,132 +155,6 @@ where
         self.cons_headtail.mark_finished();
     }
 
-    /// Move the producers head to get `n` entries.
-    ///
-    /// # Returns
-    /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
-    fn claim_prod<Q>(&self, n: u32) -> Result<Claim, Error>
-    where
-        Q: QueueBehaviour,
-    {
-        let mut old_head = self.prod_headtail.load_head(Relaxed);
-
-        loop {
-            // Ensure the head is read before the tail
-            fence(Acquire);
-
-            // load-acquire synchronize with store-release of cons_update_tail
-            let cons_tail = self.cons_headtail.load_tail(Acquire);
-
-            let entries = Self::uninitialized_entries(old_head, cons_tail);
-
-            if entries == 0 {
-                cold_path();
-                // Check if the MSB is set, as that indicates the channel is closed on the other side
-                if cons_tail & 0x8000_0000 != 0 {
-                    cold_path();
-                    return Err(Error::Closed);
-                }
-                return Err(Error::Full);
-            } else if Q::FIXED && n > entries {
-                cold_path();
-                return Err(Error::NotEnoughSpace);
-            }
-
-            let n = n.min(entries);
-
-            let new_head = (old_head + n) & (N - 1) as u32;
-            if S::IS_MULTI {
-                match self
-                    .prod_headtail
-                    .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
-                {
-                    Ok(_) => return Ok(Claim::many(n, old_head)),
-                    Err(x) => {
-                        cold_path();
-                        old_head = x;
-                    }
-                }
-            } else {
-                self.prod_headtail.store_head(new_head, Relaxed);
-                return Ok(Claim::many(n, old_head));
-            }
-        }
-    }
-
-    fn return_claim_prod(&self, claim: Claim) {
-        if S::IS_MULTI {
-            self.prod_headtail
-                .wait_until_equal_tail(claim.start, Relaxed);
-        }
-
-        self.prod_headtail
-            .store_tail(claim.new_tail::<N>(), Relaxed);
-    }
-
-    /// Move the consumers head to get `n` entries.
-    ///
-    /// # Returns
-    /// The amount of acquired entries, which is smaller or equal to `n` and can be zero.
-    fn claim_cons<Q>(&self, n: u32) -> Result<Claim, Error>
-    where
-        Q: QueueBehaviour,
-    {
-        let mut old_head = self.cons_headtail.load_head(Relaxed);
-
-        loop {
-            // Ensure the head is read before the tail
-            fence(Acquire);
-
-            // load-acquire synchronize with store-release of cons_update_tail
-            let prod_tail = self.prod_headtail.load_tail(Acquire);
-
-            let entries = Self::initialized_entries(old_head, prod_tail);
-
-            if entries == 0 {
-                cold_path();
-                // Check if the MSB is set, as that indicates the channel is closed on the other side
-                if prod_tail & 0x8000_0000 != 0 {
-                    cold_path();
-                    return Err(Error::Closed);
-                }
-                return Err(Error::Empty);
-            } else if Q::FIXED && n > entries {
-                cold_path();
-                return Err(Error::NotEnoughItems);
-            }
-
-            let n = n.min(entries);
-
-            let new_head = (old_head + n) & (N - 1) as u32;
-            if R::IS_MULTI {
-                match self
-                    .cons_headtail
-                    .compare_exchange_weak_head(old_head, new_head, Relaxed, Relaxed)
-                {
-                    Ok(_) => return Ok(Claim::many(n, old_head)),
-                    Err(x) => {
-                        cold_path();
-                        old_head = x;
-                    }
-                }
-            } else {
-                self.cons_headtail.store_head(new_head, Relaxed);
-                return Ok(Claim::many(n, old_head));
-            }
-        }
-    }
-
-    fn return_claim_cons(&self, claim: Claim) {
-        if R::IS_MULTI {
-            self.cons_headtail
-                .wait_until_equal_tail(claim.start, Relaxed);
-        }
-
-        self.cons_headtail
-            .store_tail(claim.new_tail::<N>(), Relaxed);
-    }
-
     /// Get a reference to the data part of the ring.
     fn data(&self) -> &[UnsafeCell<MaybeUninit<T>>; N] {
         self.data.deref()
@@ -317,16 +163,22 @@ where
     pub fn try_enqueue<I, Q>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
-        Q: QueueBehaviour,
+        Q: crate::modes::QueueBehaviour,
     {
-        let claim = match self.claim_prod::<Q>(values.len() as u32) {
+        let Some(len) = NonZeroU32::new(values.len() as u32) else {
+            cold_path();
+            return Ok(0);
+        };
+        let claim = match self
+            .prod_headtail
+            .move_head::<N, true, Q, _>(self.cons_headtail.deref(), len)
+        {
             Ok(claim) => claim,
             Err(err) => {
                 cold_path();
                 return Err(err);
             }
         };
-        println!("prod: claim: {claim:?}");
 
         let data = self.data();
         for (i, value) in values.take(claim.entries() as usize).enumerate() {
@@ -337,44 +189,41 @@ where
             }
             // SAFETY: Our Claim gives exclusive access to this index
             unsafe {
-                data[offset].with_mut(|p| p.write(MaybeUninit::new(value)));
+                data[offset].with_mut(|p| (&mut *p).write(value));
             }
         }
 
         let n = claim.entries() as usize;
 
-        println!("prod: return: {claim:?}");
-        self.return_claim_prod(claim);
+        self.prod_headtail.update_tail::<N>(claim);
 
         Ok(n)
     }
 
-    pub fn try_dequeue<Q>(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error>
+    pub fn try_dequeue<Q>(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error>
     where
-        Q: QueueBehaviour,
+        Q: crate::modes::QueueBehaviour,
     {
-        let claim = match self.claim_cons::<Q>(n as u32) {
+        let Some(len) = NonZeroU32::new(n as u32) else {
+            cold_path();
+            return Ok(RecvValues::new_empty());
+        };
+        let claim = match self
+            .cons_headtail
+            .move_head::<N, false, Q, _>(self.prod_headtail.deref(), len)
+        {
             Ok(claim) => claim,
             Err(err) => {
                 cold_path();
                 return Err(err);
             }
         };
-        println!("cons: claim: {claim:?}");
 
-        unsafe { Ok(RecvValues::new(self, claim)) }
+        unsafe { RecvValues::new(self, claim) }
     }
 
-    const fn initialized_entries(cons_head: u32, prod_tail: u32) -> u32 {
-        // Clear the MSB in case the producers are already dropped
-        let prod_tail = prod_tail & 0x7FFF_FFFF;
-        prod_tail.wrapping_sub(cons_head) & (N as u32 - 1)
-    }
-
-    const fn uninitialized_entries(prod_head: u32, cons_tail: u32) -> u32 {
-        // Clear the MSB in case the producers are already dropped
-        let cons_tail = cons_tail & 0x7FFF_FFFF;
-        (N as u32 - 1 + cons_tail).wrapping_sub(prod_head) & (N as u32 - 1)
+    pub fn return_claim_cons(&self, claim: Claim) {
+        self.cons_headtail.update_tail::<N>(claim);
     }
 
     pub fn poison(&self) {
@@ -384,12 +233,10 @@ where
 }
 
 /// Functions for keeping track of the active consumers and producers.
-impl<const N: usize, T, P, C, S, R> Ring<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Ring<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     pub fn register_producer(&self) -> Result<(), Error> {
         self.active.register_producer()
@@ -409,75 +256,4 @@ where
     pub fn active_consumers(&self) -> u16 {
         self.active.active_consumers()
     }
-}
-
-pub struct Claim {
-    // TODO: Maybe make nonzero?
-    entries: NonZeroU32,
-    start: u32,
-}
-
-impl Debug for Claim {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "Claim {{ entries: {}, start: {}}}",
-            self.entries, self.start
-        ))
-    }
-}
-
-impl Claim {
-    /// A claim for `n` entries at `start`
-    fn many(entries: u32, start: u32) -> Self {
-        Self {
-            entries: NonZeroU32::new(entries).unwrap_or_else(|| unreachable!()),
-            start,
-        }
-    }
-
-    const fn entries(&self) -> u32 {
-        self.entries.get()
-    }
-
-    const fn start(&self) -> u32 {
-        self.start
-    }
-
-    const fn new_tail<const N: usize>(self) -> u32 {
-        let new = self.start as u64 + self.entries.get() as u64;
-        let _dont_drop_self = ManuallyDrop::new(self);
-        if new >= N as u64 {
-            cold_path();
-            (new - N as u64) as u32
-        } else {
-            new as u32
-        }
-    }
-}
-
-impl Drop for Claim {
-    fn drop(&mut self) {
-        // The Claim should always be consumed by `new_tail` if it has at least one entry.
-        // `new_tail` doesn't cause a drop because it uses ManuallyDrop.
-        if !std::thread::panicking() {
-            cold_path();
-            panic!("Claim was dropped before being returned");
-        }
-    }
-}
-
-/// What to do when there is not enough room for (de)queueing all items.
-///
-/// When `FIXED` is `true`, then it will give up. Otherwise, it will just (de)queue less.
-pub trait QueueBehaviour {
-    const FIXED: bool;
-}
-pub enum FixedQueue {}
-impl QueueBehaviour for FixedQueue {
-    const FIXED: bool = true;
-}
-pub enum VariableQueue {}
-
-impl QueueBehaviour for VariableQueue {
-    const FIXED: bool = false;
 }

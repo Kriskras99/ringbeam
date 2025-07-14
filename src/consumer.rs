@@ -1,39 +1,29 @@
 use crate::{
-    Error, HeadTail, Multi,
-    hint::cold_path,
-    ring::{FixedQueue, IsMulti, Ring, VariableQueue, active::Last, recv_values::RecvValues},
+    Error,
+    modes::{FixedQueue, Mode, VariableQueue},
+    ring::{Ring, active::Last, recv_values::RecvValues},
+    std::hint::cold_path,
 };
 use std::thread::panicking;
 
-pub struct Receiver<const N: usize, T, P, C, S, R>
+pub struct Receiver<const N: usize, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
-    ring: *const Ring<N, T, P, C, S, R>,
+    ring: *const Ring<N, T, P, C>,
 }
 
-impl<const N: usize, T, P, C, S, R> Receiver<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Receiver<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     /// Create a new receiver.
     ///
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`].
-    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C, S, R>) -> Self {
-        // As only 1 Receiver<Single> is allowed to exist this would require ring.active_consumers
-        // to be zero, but that would mean the channel is closed.
-        assert!(
-            S::IS_MULTI,
-            "Receiver<Single> cannot be created through Receiver::new"
-        );
-
+    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Self {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             (*ring).register_consumer().unwrap();
@@ -48,7 +38,7 @@ where
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`]. In addition,
     /// the active consumers counter must have already been incremented.
-    pub(crate) unsafe fn new_no_register(ring: *const Ring<N, T, P, C, S, R>) -> Self {
+    pub(crate) unsafe fn new_no_register(ring: *const Ring<N, T, P, C>) -> Self {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             cold_path();
@@ -88,7 +78,7 @@ where
     /// Returns [`Error::Empty`] when empty, [`Error::NotEnoughItems`] if there are items but not
     /// as many as requested, [`Error::Closed`] when closed, and [`Error::Poisoned`]
     /// when the ring is poisoned.
-    pub fn try_recv_bulk(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
+    pub fn try_recv_bulk(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
@@ -107,7 +97,7 @@ where
     /// # Errors
     /// Returns [`Error::Empty`] when empty, [`Error::Closed`] when closed, and [`Error::Poisoned`]
     /// when the ring is poisoned.
-    pub fn try_recv_burst(&self, n: usize) -> Result<RecvValues<N, T, P, C, S, R>, Error> {
+    pub fn try_recv_burst(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
@@ -116,11 +106,10 @@ where
     }
 }
 
-impl<const N: usize, T, P, C, S> Clone for Receiver<N, T, P, C, S, Multi>
+impl<const N: usize, T, P, C> Clone for Receiver<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
+    P: Mode,
+    C: Mode + Sync,
 {
     fn clone(&self) -> Self {
         // SAFETY: because `self` is valid, `ring` is initialized and aligned.
@@ -128,12 +117,10 @@ where
     }
 }
 
-impl<const N: usize, T, P, C, S, R> Drop for Receiver<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Drop for Receiver<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     fn drop(&mut self) {
         if panicking() {
@@ -162,20 +149,17 @@ where
 }
 
 // SAFETY: The ring is designed to be accessed from different threads.
-unsafe impl<const N: usize, T, P, C, S, R> Send for Receiver<N, T, P, C, S, R>
+unsafe impl<const N: usize, T, P, C> Send for Receiver<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
 }
 
-// SAFETY: Mutable access to the consumer head is guarded by atomics, but only for `Multi`.
-unsafe impl<const N: usize, T, P, C, S> Sync for Receiver<N, T, P, C, S, Multi>
+// SAFETY: Mutable access to the consumer head is guarded by atomics, but only for those that implement Sync.
+unsafe impl<const N: usize, T, P, C> Sync for Receiver<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
+    P: Mode,
+    C: Mode + Sync,
 {
 }

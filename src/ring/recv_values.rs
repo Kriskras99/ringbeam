@@ -1,8 +1,11 @@
 use crate::{
-    HeadTail,
-    atomic::{Ordering::SeqCst, fence},
-    hint::cold_path,
-    ring::{Claim, IsMulti, Ring, active::Last},
+    Error,
+    modes::{Claim, Mode},
+    ring::{Ring, active::Last},
+    std::{
+        hint::cold_path,
+        sync::atomic::{Ordering::SeqCst, fence},
+    },
 };
 
 /// A view into a part of the channel.
@@ -10,14 +13,12 @@ use crate::{
 /// The items can be consumed by using its iterator implementation.
 /// If this is dropped before being fully consumed, the items it can view
 /// will also be dropped.
-pub struct RecvValues<const N: usize, T, P, C, S, R>
+pub struct RecvValues<const N: usize, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
-    claim_and_ring: Option<(Claim, *const Ring<N, T, P, C, S, R>)>,
+    claim_and_ring: Option<(Claim, *const Ring<N, T, P, C>)>,
     /// The amount of items already consumed
     consumed: u32,
     /// Offset (in amount of `T`) in `Ring::data()` where the next item is.
@@ -26,40 +27,43 @@ where
     offset: u32,
 }
 
-impl<const N: usize, T, P, C, S, R> RecvValues<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> RecvValues<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     /// Create a new value iterator.
     ///
     /// # Safety
     /// `Claim` *must* contain non-zero entries.
-    pub unsafe fn new(ring: *const Ring<N, T, P, C, S, R>, claim: Claim) -> Self {
+    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>, claim: Claim) -> Result<Self, Error> {
+        // TODO: Why the fence?
         fence(SeqCst);
         unsafe {
             // TODO: This is reachable if the channel is poisoned
-            (&*ring)
-                .register_consumer()
-                .unwrap_or_else(|_| unreachable!());
+            (&*ring).register_consumer()?;
         }
         let offset = claim.start();
-        Self {
+        Ok(Self {
             claim_and_ring: Some((claim, ring)),
             consumed: 0,
             offset,
+        })
+    }
+
+    pub(crate) const fn new_empty() -> Self {
+        Self {
+            claim_and_ring: None,
+            consumed: 0,
+            offset: 0,
         }
     }
 }
 
-impl<const N: usize, T, P, C, S, R> Iterator for RecvValues<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Iterator for RecvValues<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     type Item = T;
 
@@ -80,7 +84,6 @@ where
             if self.consumed >= claim.entries() {
                 cold_path();
                 // SAFETY: We haven't deregistered yet
-                println!("cons: return: {claim:?}");
                 unsafe { (*ring).return_claim_cons(claim) };
                 match unsafe { (*ring).unregister_consumer().unwrap() } {
                     Last::InCategory => {
@@ -115,12 +118,10 @@ where
     }
 }
 
-impl<const N: usize, T, P, C, S, R> Drop for RecvValues<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> Drop for RecvValues<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     fn drop(&mut self) {
         if let Some((claim, ring)) = self.claim_and_ring.take() {
@@ -141,7 +142,6 @@ where
             }
 
             // SAFETY: We haven't deregistered yet
-            println!("cons: return: {claim:?}");
             unsafe { (*ring).return_claim_cons(claim) };
             match unsafe { (*ring).unregister_consumer().unwrap() } {
                 Last::InCategory => {
@@ -159,22 +159,18 @@ where
     }
 }
 
-impl<const N: usize, T, P, C, S, R> ExactSizeIterator for RecvValues<N, T, P, C, S, R>
+impl<const N: usize, T, P, C> ExactSizeIterator for RecvValues<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
 }
 
 #[cfg(feature = "trusted_len")]
 // SAFETY: The ExactSizeIterator implementation is always accurate
-unsafe impl<const N: usize, T, P, C, S, R> std::iter::TrustedLen for RecvValues<N, T, P, C, S, R>
+unsafe impl<const N: usize, T, P, C> std::iter::TrustedLen for RecvValues<N, T, P, C>
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
 }

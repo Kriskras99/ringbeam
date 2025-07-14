@@ -19,7 +19,6 @@ where
 {
     #[cfg(feature = "shuttle")]
     {
-        println!("Running in shuttle");
         shuttle::check_dfs(f, None);
     }
     #[cfg(not(feature = "shuttle"))]

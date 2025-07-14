@@ -1,83 +1,25 @@
 #![cfg_attr(feature = "trusted_len", feature(trusted_len))]
 #![cfg_attr(feature = "likely", feature(cold_path))]
-#![expect(clippy::type_complexity, reason = "This crate is type generics heavy")]
 
 #[cfg(all(feature = "loom", feature = "shuttle"))]
 compile_error!("Features 'loom' and 'shuttle' cannot be enabled at the same time");
 
 mod cache_padded;
 mod consumer;
-mod headtail;
+pub mod modes;
 mod producer;
 mod ring;
+pub mod std;
 
 pub use consumer::Receiver;
-pub use headtail::{HeadTail, HeadTailSync, RelaxedTailSync, TailSync};
 pub use producer::Sender;
-pub use ring::{IsMulti, Multi, Single, recv_values::RecvValues};
+pub use ring::recv_values::RecvValues;
 
-use crate::ring::Ring;
+use crate::{
+    modes::{HeadTailSync, Mode, Multi, RelaxedTailSync, Single},
+    ring::Ring,
+};
 use thiserror::Error;
-
-#[cfg(feature = "loom")]
-mod atomic {
-    pub use loom::sync::atomic::{AtomicU32, Ordering, fence};
-}
-#[cfg(feature = "shuttle")]
-mod atomic {
-    pub use shuttle::sync::atomic::{AtomicU32, Ordering, fence};
-}
-#[cfg(not(any(feature = "loom", feature = "shuttle")))]
-mod atomic {
-    pub use std::sync::atomic::{AtomicU32, Ordering, fence};
-}
-
-#[cfg(feature = "loom")]
-mod alloc {
-    pub use loom::alloc::{Layout, alloc, dealloc};
-}
-#[cfg(not(feature = "loom"))]
-mod alloc {
-    pub use std::alloc::{Layout, alloc, dealloc};
-}
-
-#[cfg(feature = "loom")]
-mod cell {
-    pub use loom::cell::UnsafeCell;
-}
-#[cfg(not(feature = "loom"))]
-mod cell {
-    #[derive(Debug)]
-    #[repr(transparent)]
-    pub struct UnsafeCell<T>(std::cell::UnsafeCell<T>);
-
-    impl<T> UnsafeCell<T> {
-        pub const fn new(data: T) -> Self {
-            Self(std::cell::UnsafeCell::new(data))
-        }
-        pub fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
-            f(self.0.get())
-        }
-
-        pub fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
-            f(self.0.get())
-        }
-    }
-}
-
-mod hint {
-    #[cfg(feature = "loom")]
-    pub use loom::hint::spin_loop;
-    #[cfg(feature = "shuttle")]
-    pub use shuttle::hint::spin_loop;
-    #[cfg(not(any(feature = "loom", feature = "shuttle")))]
-    pub use std::hint::spin_loop;
-
-    #[cfg(not(feature = "likely"))]
-    pub const fn cold_path() {}
-    #[cfg(feature = "likely")]
-    pub use std::hint::cold_path;
-}
 
 mod sealed {
     pub trait Sealed {}
@@ -90,6 +32,7 @@ mod sealed {
 // TODO: Implement peek for single/multi_hts
 // TODO: Make testing with loom and shuttle actually work
 // TODO: Maybe repr(c) on Ring, take an extra look at cache alignment.
+// TODO: WFE/SEV on ARM
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -116,58 +59,99 @@ pub enum Error {
 /// # Type parameters
 /// - N: the size of the channel,
 /// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`HeadTail`]),
-/// - R: set the amount of consumers to one or many (see [`IsMulti`]).
-pub type MP<const N: usize, T, C, R> = Sender<N, T, TailSync, C, Multi, R>;
+/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+pub type Mp<const N: usize, T, C> = Sender<N, T, Multi, C>;
+
+/// A producer which can be cloned to multiple threads but only allows one producer active at a time.
+///
+/// # Type parameters
+/// - N: the size of the channel,
+/// - T: the type that will be sent over the channel,
+/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+pub type MpHts<const N: usize, T, C> = Sender<N, T, HeadTailSync, C>;
+
+/// A producer which can be cloned to multiple threads where the last producer moves the tail.
+///
+/// # Type parameters
+/// - N: the size of the channel,
+/// - T: the type that will be sent over the channel,
+/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+pub type MpRts<const N: usize, T, C> = Sender<N, T, RelaxedTailSync, C>;
 
 /// A producer which can only be on a single thread.
 ///
 /// # Type parameters
 /// - N: the size of the channel,
 /// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`HeadTail`]),
-/// - R: set the amount of consumers to one or many (see [`IsMulti`]).
-pub type SP<const N: usize, T, C, R> = Sender<N, T, TailSync, C, Single, R>;
+/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+pub type Sp<const N: usize, T, C> = Sender<N, T, Single, C>;
 
 /// A consumer which can be cloned to multiple threads.
 ///
 /// # Type parameters
 /// - N: the size of the channel,
 /// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`HeadTail`]),
-/// - S: set the amount of producers to one or many (see [`IsMulti`]),
-pub type MC<const N: usize, T, P, S> = Receiver<N, T, TailSync, P, S, Multi>;
+/// - P: the sync mode of the producer head and tail (see [`Mode`]),
+pub type Mc<const N: usize, T, P> = Receiver<N, T, P, Multi>;
+
+/// A consumer which can be cloned to multiple threads but only allows one consumer active at a time.
+///
+/// # Type parameters
+/// - N: the size of the channel,
+/// - T: the type that will be sent over the channel,
+/// - P: the sync mode of the producer head and tail (see [`Mode`]),
+pub type McHts<const N: usize, T, P> = Receiver<N, T, P, HeadTailSync>;
+
+/// A consumer which can be cloned to multiple threads where the last consumer moves the tail.
+///
+/// # Type parameters
+/// - N: the size of the channel,
+/// - T: the type that will be sent over the channel,
+/// - P: the sync mode of the producer head and tail (see [`Mode`]),
+pub type McRts<const N: usize, T, P> = Receiver<N, T, P, RelaxedTailSync>;
 
 /// A consumer which can only be on a single thread.
 ///
 /// # Type parameters
 /// - N: the size of the channel,
 /// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`HeadTail`]),
-/// - S: set the amount of producers to one or many (see [`IsMulti`]),
-pub type SC<const N: usize, T, P, S> = Receiver<N, T, TailSync, P, S, Single>;
+/// - P: the sync mode of the producer head and tail (see [`Mode`]),
+pub type Sc<const N: usize, T, P> = Receiver<N, T, P, Single>;
 
 /// Create a multi-producer/multi-consumer channel with space for `N` values of `T`.
 #[must_use]
-pub fn mpmc<const N: usize, T>() -> (MP<N, T, TailSync, Multi>, MC<N, T, TailSync, Multi>) {
+pub fn mpmc<const N: usize, T>() -> (Mp<N, T, Multi>, Mc<N, T, Multi>) {
+    Ring::new()
+}
+
+/// Create a multi-producer/multi-consumer (HTS) channel with space for `N` values of `T`.
+#[must_use]
+pub fn mpmc_hts<const N: usize, T>() -> (MpHts<N, T, HeadTailSync>, McHts<N, T, HeadTailSync>) {
+    Ring::new()
+}
+
+/// Create a multi-producer/multi-consumer (RTS) channel with space for `N` values of `T`.
+#[must_use]
+pub fn mpmc_rts<const N: usize, T>() -> (MpRts<N, T, RelaxedTailSync>, McRts<N, T, RelaxedTailSync>)
+{
     Ring::new()
 }
 
 /// Create a multi-producer/single-consumer channel with space for `N` values of `T`.
 #[must_use]
-pub fn mpsc<const N: usize, T>() -> (MP<N, T, TailSync, Single>, SC<N, T, TailSync, Multi>) {
+pub fn mpsc<const N: usize, T>() -> (Mp<N, T, Single>, Sc<N, T, Multi>) {
     Ring::new()
 }
 
 /// Create a single-producer/multi-consumer channel with space for `N` values of `T`.
 #[must_use]
-pub fn spmc<const N: usize, T>() -> (SP<N, T, TailSync, Multi>, MC<N, T, TailSync, Single>) {
+pub fn spmc<const N: usize, T>() -> (Sp<N, T, Multi>, Mc<N, T, Single>) {
     Ring::new()
 }
 
 /// Create a single-producer/single-consumer channel with space for `N` values of `T`.
 #[must_use]
-pub fn spsc<const N: usize, T>() -> (SP<N, T, TailSync, Single>, SC<N, T, TailSync, Single>) {
+pub fn spsc<const N: usize, T>() -> (Sp<N, T, Single>, Sc<N, T, Single>) {
     Ring::new()
 }
 
@@ -176,18 +160,13 @@ pub fn spsc<const N: usize, T>() -> (SP<N, T, TailSync, Single>, SC<N, T, TailSy
 /// # Type parameters
 /// - N: the size of the channel,
 /// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`HeadTail`]),
-/// - C: the sync mode of the consumer head and tail (see [`HeadTail`]),
-/// - S: set the amount of producers to one or many (see [`IsMulti`]),
-/// - R: set the amount of consumers to one or many (see [`IsMulti`]).
+/// - P: the sync mode of the producer head and tail (see [`Mode`]),
+/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
 #[must_use]
-pub fn bounded<const N: usize, T, P, C, S, R>()
--> (Sender<N, T, P, C, S, R>, Receiver<N, T, P, C, S, R>)
+pub fn bounded<const N: usize, T, P, C>() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>)
 where
-    P: HeadTail,
-    C: HeadTail,
-    S: IsMulti,
-    R: IsMulti,
+    P: Mode,
+    C: Mode,
 {
     Ring::new()
 }

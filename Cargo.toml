@@ -33,6 +33,3 @@ cast_possible_truncation = "allow"
 cast_lossless = "allow"
 # .deref() looks beter than &*
 explicit_deref_methods = "allow"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
