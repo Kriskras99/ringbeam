@@ -20,8 +20,9 @@ shuttle = { version = "0.8.1", default-features = false, features = [], optional
 [features]
 likely = []
 trusted_len = []
-loom = ["dep:loom"]
-shuttle = ["dep:shuttle"]
+loom = ["dep:loom", "safe_maybeuninit"]
+shuttle = ["dep:shuttle", "safe_maybeuninit"]
+safe_maybeuninit = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

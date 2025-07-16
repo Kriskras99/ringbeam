@@ -48,38 +48,74 @@ pub mod hint {
 }
 
 pub mod mem {
-    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    #[cfg(feature = "safe_maybeuninit")]
     pub use maybe_uninit_wrapper::MaybeUninit;
-    #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+    #[cfg(not(feature = "safe_maybeuninit"))]
     pub use std::mem::MaybeUninit;
-    #[cfg(any(feature = "loom", feature = "shuttle"))]
+    #[cfg(feature = "safe_maybeuninit")]
     mod maybe_uninit_wrapper {
         use std::sync::RwLock;
 
+        /// A `MaybeUninit` that tracks if it has been initialized.
+        ///
+        /// This version does *not* have the same size as T.
         pub struct MaybeUninit<T> {
             rw: RwLock<()>,
             inner: std::mem::MaybeUninit<T>,
+            // TODO: This doesn't work properly, need a `take` function
+            initialized: bool,
         }
 
         impl<T> MaybeUninit<T> {
-            pub fn uninit() -> Self {
+            /// Create a new uninitialized T.
+            #[must_use]
+            pub const fn uninit() -> Self {
                 Self {
                     rw: RwLock::new(()),
                     inner: std::mem::MaybeUninit::uninit(),
+                    initialized: false,
                 }
             }
-            pub unsafe fn assume_init(self) -> T {
+            /// Extract T from the container.
+            ///
+            /// # Panics
+            /// Will panic if T is not initialized or another thread is currently writing to it.
+            ///
+            /// # Safety
+            /// It does not have any safety requirements, the function signature just matches
+            /// [`std::mem::MaybeUninit`].
+            pub unsafe fn assume_init(mut self) -> T {
                 let _guard = self.rw.try_read().unwrap();
+                assert!(self.initialized, "Container is not initialized!");
+                self.initialized = false;
                 unsafe { self.inner.assume_init() }
             }
 
+            /// Write a valid value of T.
+            ///
+            /// # Panics
+            /// Will panic if another thread is currently reading it.
             pub fn write(&mut self, value: T) {
                 let _guard = self.rw.try_write().unwrap();
                 self.inner.write(value);
+                if self.initialized {
+                    eprintln!("Warning! Was already initialized!");
+                }
+                self.initialized = true;
             }
 
+            /// Drop T from the container.
+            ///
+            /// # Panics
+            /// Will panic if T is not initialized or another thread is currently writing to it.
+            ///
+            /// # Safety
+            /// It does not have any safety requirements, the function signature just matches
+            /// [`std::mem::MaybeUninit`].
             pub unsafe fn assume_init_drop(&mut self) {
                 let _guard = self.rw.try_write().unwrap();
+                assert!(self.initialized, "Container is not initialized!");
+                self.initialized = false;
                 unsafe {
                     self.inner.assume_init_drop();
                 }
