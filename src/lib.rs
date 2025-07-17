@@ -9,7 +9,7 @@ mod consumer;
 pub mod modes;
 mod producer;
 mod ring;
-pub mod std;
+mod std;
 
 pub use consumer::Receiver;
 pub use producer::Sender;
@@ -155,7 +155,7 @@ pub fn spsc<const N: usize, T>() -> (Sp<N, T, Single>, Sc<N, T, Single>) {
     Ring::new()
 }
 
-/// Configure a channel with space for `N` values of `T`.
+/// Create a custom channel with space for `N` values of `T`.
 ///
 /// # Type parameters
 /// - N: the size of the channel,

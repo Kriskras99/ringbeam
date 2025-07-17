@@ -1,3 +1,5 @@
+//! Sync modes for the producers and consumers.
+
 use crate::{
     Error,
     sealed::Sealed,
@@ -19,7 +21,11 @@ pub use multi::Multi;
 pub use rts::RelaxedTailSync;
 pub use single::Single;
 
-pub trait Mode: Default + Sealed {
+#[expect(private_bounds, reason = "We don't want to expose these functions")]
+pub trait Mode: ModeInner {}
+impl<T: ModeInner> Mode for T {}
+
+pub(crate) trait ModeInner: Default {
     /// Move the head.
     ///
     /// # Generics

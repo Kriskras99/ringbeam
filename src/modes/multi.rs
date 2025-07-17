@@ -1,7 +1,6 @@
 use crate::{
     Error,
-    modes::{Claim, Mode, QueueBehaviour, calculate_available},
-    sealed::Sealed,
+    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
     std::{
         hint::cold_path,
         sync::atomic::{
@@ -21,9 +20,8 @@ pub struct Multi {
     /// The current tail.
     tail: AtomicU32,
 }
-impl Sealed for Multi {}
 
-impl Mode for Multi {
+impl ModeInner for Multi {
     fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
         &self,
         other: &Other,

@@ -1,7 +1,6 @@
 use crate::{
     Error,
-    modes::{Claim, Mode, QueueBehaviour, calculate_available},
-    sealed::Sealed,
+    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
     std::{
         hint::{cold_path, spin_loop},
         sync::atomic::{
@@ -40,7 +39,6 @@ impl RelaxedTailSync {
     }
 }
 
-impl Sealed for RelaxedTailSync {}
 #[derive(Copy, Clone, Debug)]
 struct PosCnt {
     pos: u32,
@@ -85,7 +83,7 @@ impl AtomicPosCnt {
     }
 }
 
-impl Mode for RelaxedTailSync {
+impl ModeInner for RelaxedTailSync {
     fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
         &self,
         other: &Other,

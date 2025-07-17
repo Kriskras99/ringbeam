@@ -1,7 +1,6 @@
 use crate::{
     Error,
-    modes::{Claim, Mode, QueueBehaviour, calculate_available},
-    sealed::Sealed,
+    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
     std::{
         hint::{cold_path, spin_loop},
         sync::atomic::{
@@ -17,7 +16,6 @@ use std::num::NonZeroU32;
 pub struct HeadTailSync {
     inner: AtomicU64,
 }
-impl Sealed for HeadTailSync {}
 
 #[derive(Copy, Clone)]
 struct HeadTail {
@@ -64,7 +62,7 @@ impl HeadTailSync {
     }
 }
 
-impl Mode for HeadTailSync {
+impl ModeInner for HeadTailSync {
     fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
         &self,
         other: &Other,

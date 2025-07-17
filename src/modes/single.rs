@@ -1,7 +1,6 @@
 use crate::{
     Error,
-    modes::{Claim, Mode, QueueBehaviour, calculate_available},
-    sealed::Sealed,
+    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
     std::sync::atomic::{
         AtomicU32, Ordering,
         Ordering::{Acquire, Relaxed, Release},
@@ -24,9 +23,8 @@ pub struct Single {
     tail: AtomicU32,
     _not_sync: PhantomData<*mut ()>,
 }
-impl Sealed for Single {}
 
-impl Mode for Single {
+impl ModeInner for Single {
     fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
         &self,
         other: &Other,
