@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 #![cfg_attr(feature = "trusted_len", feature(trusted_len))]
 #![cfg_attr(feature = "likely", feature(cold_path))]
 
@@ -21,37 +22,34 @@ use crate::{
 };
 use thiserror::Error;
 
-mod sealed {
-    pub trait Sealed {}
-}
-
 // TODO: Use consistent naming for producer/consumer or sender/receiver throughout.
 // TODO: Use consistent naming for enqueue/dequeue or send/recv throughout.
-// TODO: Merge the HeadTail and IsMulti types/traits as the various HeadTail variations are only
-//       relevant in multi scenarios.
 // TODO: Implement peek for single/multi_hts
 // TODO: Make testing with loom and shuttle actually work
 // TODO: Maybe repr(c) on Ring, take an extra look at cache alignment.
 // TODO: WFE/SEV on ARM
+// TODO: Document the inner workings of the various modes in their module documentation.
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
     #[error("Channel is closed")]
     Closed,
-    #[error("Channel is poisoned")]
-    Poisoned,
-    #[error("Maximum amount of producers in channel has been reached")]
-    TooManyProducers,
-    #[error("Maximum amount of consumers in channel has been reached")]
-    TooManyConsumers,
-    #[error("Channel is full")]
-    Full,
     #[error("Channel is empty")]
     Empty,
+    #[error("Channel is full")]
+    Full,
     #[error("Channel had a few items, but not as many as requested")]
     NotEnoughItems,
+    #[error("Channel is closed but still had a few items, but not as many as requested")]
+    NotEnoughItemsAndClosed,
     #[error("Channel had room, but not enough room for all the items")]
     NotEnoughSpace,
+    #[error("Channel is poisoned")]
+    Poisoned,
+    #[error("Maximum amount of consumers in channel has been reached")]
+    TooManyConsumers,
+    #[error("Maximum amount of producers in channel has been reached")]
+    TooManyProducers,
 }
 
 /// A producer which can be cloned to multiple threads.
@@ -120,18 +118,21 @@ pub type Sc<const N: usize, T, P> = Receiver<N, T, P, Single>;
 
 /// Create a multi-producer/multi-consumer channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn mpmc<const N: usize, T>() -> (Mp<N, T, Multi>, Mc<N, T, Multi>) {
     Ring::new()
 }
 
 /// Create a multi-producer/multi-consumer (HTS) channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn mpmc_hts<const N: usize, T>() -> (MpHts<N, T, HeadTailSync>, McHts<N, T, HeadTailSync>) {
     Ring::new()
 }
 
 /// Create a multi-producer/multi-consumer (RTS) channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn mpmc_rts<const N: usize, T>() -> (MpRts<N, T, RelaxedTailSync>, McRts<N, T, RelaxedTailSync>)
 {
     Ring::new()
@@ -139,18 +140,21 @@ pub fn mpmc_rts<const N: usize, T>() -> (MpRts<N, T, RelaxedTailSync>, McRts<N, 
 
 /// Create a multi-producer/single-consumer channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn mpsc<const N: usize, T>() -> (Mp<N, T, Single>, Sc<N, T, Multi>) {
     Ring::new()
 }
 
 /// Create a single-producer/multi-consumer channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn spmc<const N: usize, T>() -> (Sp<N, T, Multi>, Mc<N, T, Single>) {
     Ring::new()
 }
 
 /// Create a single-producer/single-consumer channel with space for `N` values of `T`.
 #[must_use]
+#[inline]
 pub fn spsc<const N: usize, T>() -> (Sp<N, T, Single>, Sc<N, T, Single>) {
     Ring::new()
 }
@@ -163,6 +167,7 @@ pub fn spsc<const N: usize, T>() -> (Sp<N, T, Single>, Sc<N, T, Single>) {
 /// - P: the sync mode of the producer head and tail (see [`Mode`]),
 /// - C: the sync mode of the consumer head and tail (see [`Mode`]),
 #[must_use]
+#[inline]
 pub fn bounded<const N: usize, T, P, C>() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>)
 where
     P: Mode,

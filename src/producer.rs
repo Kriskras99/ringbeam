@@ -1,3 +1,5 @@
+//! The user facing producer implementation.
+
 use crate::{
     Error,
     modes::{FixedQueue, Mode, VariableQueue},
@@ -11,6 +13,9 @@ where
     P: Mode,
     C: Mode,
 {
+    /// The actual ring.
+    ///
+    /// This pointer is valid and aligned for the entire lifetime of [`Sender`].
     ring: *const Ring<N, T, P, C>,
 }
 
@@ -23,12 +28,16 @@ where
     ///
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`].
-    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Self {
+    ///
+    /// # Errors
+    /// Will return [`Error::Closed`] or [`Error::Poisoned`], if the ring is in that state. It will
+    /// return [`Error::TooManyProducers`] if there are already `u16::MAX - 1` producers.
+    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Result<Self, Error> {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
-            (*ring).register_producer().unwrap();
+            (*ring).active().register_producer()?;
         }
-        Self { ring }
+        Ok(Self { ring })
     }
 
     /// Create a new sender but don't register it as active.
@@ -42,7 +51,10 @@ where
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             cold_path();
-            debug_assert!((*ring).active_producers() == 1);
+            debug_assert!(
+                (*ring).active().producers() == Ok(1),
+                "This function must only be called when initializing the ring"
+            );
         }
         Self { ring }
     }
@@ -52,8 +64,9 @@ where
     /// # Errors
     /// Returns [`Ok(Some(T))`] when full, [`Error::Closed`] when closed, and [`Error::Poisoned`]
     /// when the ring is poisoned.
+    #[inline]
     pub fn try_send(&self, value: T) -> Result<Option<T>, Error> {
-        let mut once = std::iter::once(value);
+        let mut once = core::iter::once(value);
         match self.try_send_bulk(&mut once) {
             Ok(1) => Ok(None),
             Err(Error::Full) => {
@@ -76,10 +89,11 @@ where
     /// The amount of values written.
     ///
     /// # Errors
-    /// Returns [`Error::Full`] when full, [`Error::NotEnoughSpace`] if there is space but not
-    /// enough for all items, [`Error::Closed`] when closed, and [`Error::Poisoned`]
-    /// when the ring is poisoned.
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. It can also
+    /// return [`Error::NotEnoughSpace`], which can also be successful on a retry.
     // TODO: The Iterator must be TrustedLen, but that's unstable
+    #[inline]
     pub fn try_send_bulk<I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
@@ -101,9 +115,10 @@ where
     /// The amount of values written.
     ///
     /// # Errors
-    /// Returns [`Error::Full`] when full, [`Error::Closed`] when closed, and [`Error::Poisoned`]
-    /// when the ring is poisoned.
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful.
     // TODO: The Iterator must be TrustedLen, but that's unstable
+    #[inline]
     pub fn try_send_burst<I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
@@ -121,9 +136,10 @@ where
     P: Mode + Sync,
     C: Mode,
 {
+    #[inline]
     fn clone(&self) -> Self {
         // SAFETY: because `self` is valid, `ring` is initialized and aligned.
-        unsafe { Self::new(self.ring) }
+        unsafe { Self::new(self.ring).expect("Failed to clone producer!") }
     }
 }
 
@@ -132,15 +148,25 @@ where
     P: Mode,
     C: Mode,
 {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "This function is too large too inline"
+    )]
     fn drop(&mut self) {
         if panicking() {
+            cold_path();
+            // SAFETY: Ring is valid before we call unregister_producer
             unsafe {
-                // SAFETY: Ring is valid before we call unregister_producer
                 (*self.ring).poison();
             }
         } else {
             // SAFETY: Ring is valid before we call unregister_producer
-            match unsafe { (*self.ring).unregister_producer().unwrap() } {
+            match unsafe {
+                (*self.ring)
+                    .active()
+                    .unregister_producer()
+                    .expect("Ring is poisoned!")
+            } {
                 Last::InCategory => {
                     // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
                     // wait for the tail being marked.
@@ -149,7 +175,7 @@ where
                     }
                 }
                 Last::InRing => {
-                    // Drop the ring as we're last
+                    // SAFETY: `Last::InRing` guarantees that we're the last
                     unsafe { Ring::cleanup(self.ring) }
                 }
                 Last::NotLast => {}

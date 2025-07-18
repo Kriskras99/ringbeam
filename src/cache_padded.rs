@@ -1,4 +1,6 @@
-use std::{
+//! Wrapper for aligning to (double) a cache line.
+
+use core::{
     fmt,
     ops::{Deref, DerefMut},
 };
@@ -152,10 +154,13 @@ use std::{
     repr(align(64))
 )]
 pub struct CachePadded<T> {
+    /// The value that needs to be aligned.
     value: T,
 }
 
+// SAFETY: This type is just an align wrapper, no safety requirements.
 unsafe impl<T: Send> Send for CachePadded<T> {}
+// SAFETY: This type is just an align wrapper, no safety requirements.
 unsafe impl<T: Sync> Sync for CachePadded<T> {}
 
 impl<T> CachePadded<T> {
@@ -168,6 +173,7 @@ impl<T> CachePadded<T> {
     ///
     /// let padded_value = CachePadded::new(1);
     /// ```
+    #[inline]
     pub const fn new(t: T) -> Self {
         Self { value: t }
     }
@@ -176,12 +182,14 @@ impl<T> CachePadded<T> {
 impl<T> Deref for CachePadded<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &T {
         &self.value
     }
 }
 
 impl<T> DerefMut for CachePadded<T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut T {
         &mut self.value
     }
@@ -196,6 +204,7 @@ impl<T: fmt::Debug> fmt::Debug for CachePadded<T> {
 }
 
 impl<T> From<T> for CachePadded<T> {
+    #[inline]
     fn from(t: T) -> Self {
         Self::new(t)
     }

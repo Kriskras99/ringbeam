@@ -1,3 +1,4 @@
+//! Logic for tracking the amount of consumers and producers.
 use crate::{
     Error,
     std::{
@@ -13,6 +14,7 @@ use crate::{
 ///
 /// This is a wrapper around [`AtomicU32`], converting to and from [`Active`] on load and store.
 pub struct AtomicActive {
+    /// The encoded form of [`Active`].
     inner: AtomicU32,
 }
 
@@ -33,18 +35,28 @@ pub enum Last {
 
 impl AtomicActive {
     /// Create a new counter with the given initial values.
+    #[inline]
     pub fn new(consumers: u16, producers: u16) -> Self {
         Self {
             inner: AtomicU32::new(Active::new(consumers, producers).into()),
         }
     }
 
-    // TODO: copy docs from atomicu32
+    /// Loads the [`Active`] value atomically.
+    ///
+    /// See [`AtomicU32::load`].
+    #[inline]
     pub fn load(&self, ordering: Ordering) -> Active {
         self.inner.load(ordering).into()
     }
 
-    // TODO: copy docs from atomicu32
+    /// Update the [`Active`] value atomically.
+    ///
+    /// `f` can run multiple times but it is guaranteed that the result is only stored once.
+    ///
+    /// See [`AtomicU32::fetch_update`].
+    #[inline]
+    #[expect(clippy::missing_errors_doc, reason = "Not really an error")]
     pub fn fetch_update<F>(
         &self,
         set_order: Ordering,
@@ -68,7 +80,7 @@ impl AtomicActive {
     pub fn register_producer(&self) -> Result<(), Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
-            if a.producers > 0 && a.producers < (u16::MAX - 1) {
+            if a.producers > 0 && a.producers < u16::MAX {
                 a.producers += 1;
                 Some(a)
             } else {
@@ -95,7 +107,7 @@ impl AtomicActive {
     pub fn register_consumer(&self) -> Result<(), Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
-            if a.consumers > 0 && a.consumers < (u16::MAX - 1) {
+            if a.consumers > 0 && a.consumers < u16::MAX {
                 a.consumers += 1;
                 Some(a)
             } else {
@@ -114,11 +126,17 @@ impl AtomicActive {
         })
     }
 
-    /// Unregister an active producer, return a [`Last`] to indicate if it was the last entity.
+    /// Unregister an active producer, returns a [`Last`] to indicate if it was the last entity.
+    ///
+    /// # Errors
+    /// Returns [`Error::Poisoned`] if the ring is poisoned.
+    ///
+    /// # Panics
+    /// Will panic if producers is already 0.
     pub fn unregister_producer(&self) -> Result<Last, Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
-            if a.producers > 0 && a.producers < (u16::MAX - 1) {
+            if a.producers > 0 && a.producers < u16::MAX {
                 a.producers -= 1;
                 Some(a)
             } else {
@@ -151,11 +169,17 @@ impl AtomicActive {
         })
     }
 
-    /// Unregister an active consumer, return a [`Last`] to indicate if it was the last entity.
+    /// Unregister an active consumer, returns a [`Last`] to indicate if it was the last entity.
+    ///
+    /// # Errors
+    /// Returns [`Error::Poisoned`] if the ring is poisoned.
+    ///
+    /// # Panics
+    /// Will panic if consumers is already 0.
     pub fn unregister_consumer(&self) -> Result<Last, Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
-            if a.consumers > 0 && a.consumers < (u16::MAX - 1) {
+            if a.consumers > 0 && a.consumers < u16::MAX {
                 a.consumers -= 1;
                 Some(a)
             } else {
@@ -188,31 +212,68 @@ impl AtomicActive {
         })
     }
 
-    pub fn active_producers(&self) -> u16 {
+    /// The amount of active producers.
+    ///
+    /// # Errors
+    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    #[inline]
+    pub fn producers(&self) -> Result<u16, Error> {
         // TODO: This ordering is most likely too strict
-        self.load(SeqCst).producers
+        let producers = self.load(SeqCst).producers;
+        if producers == u16::MAX {
+            Err(Error::Poisoned)
+        } else {
+            Ok(producers)
+        }
     }
 
-    pub fn active_consumers(&self) -> u16 {
+    /// The amount of active consumers.
+    ///
+    /// # Errors
+    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    #[inline]
+    pub fn consumers(&self) -> Result<u16, Error> {
         // TODO: This ordering is most likely too strict
-        self.load(SeqCst).consumers
+        let consumers = self.load(SeqCst).consumers;
+        if consumers == u16::MAX {
+            Err(Error::Poisoned)
+        } else {
+            Ok(consumers)
+        }
     }
 
     /// Poison the counter.
     ///
     /// This is a safe function as it will only result in a memory leak, which is safe.
+    #[inline]
     pub fn poison(&self) {
         self.inner.store(u32::MAX, Relaxed);
+    }
+
+    /// Is the counter poisoned.
+    ///
+    /// This is a safe function as it will only result in a memory leak, which is safe.
+    #[inline]
+    pub fn is_poisoned(&self) -> bool {
+        self.inner.load(Relaxed) == u32::MAX
     }
 }
 
 /// A counter of active consumers and producers.
 pub struct Active {
+    /// Amount of active consumers.
+    ///
+    /// Is `0xFFFF` if the ring is poisoned.
     pub consumers: u16,
+    /// Amount of active producers.
+    ///
+    /// Is `0xFFFF` if the ring is poisoned.
     pub producers: u16,
 }
 
 impl Active {
+    /// Create a new [`Active`] counter with the initial value.
+    #[inline]
     pub const fn new(consumers: u16, producers: u16) -> Self {
         Self {
             consumers,
@@ -220,12 +281,22 @@ impl Active {
         }
     }
 
-    pub const fn is_empty(&self) -> bool {
-        self.consumers == 0 && self.producers == 0
+    /// Have all producers and consumers shutdown.
+    ///
+    /// # Errors
+    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    #[inline]
+    pub const fn is_empty(&self) -> Result<bool, Error> {
+        if self.consumers == 0xFFFF && self.producers == 0xFFFF {
+            Err(Error::Poisoned)
+        } else {
+            Ok(self.consumers == 0 && self.producers == 0)
+        }
     }
 }
 
 impl From<u32> for Active {
+    #[inline]
     fn from(value: u32) -> Self {
         let consumers = (value >> 16) as u16;
         let producers = (value & 0xFFFF) as u16;
@@ -238,6 +309,7 @@ impl From<u32> for Active {
 
 impl From<Active> for u32 {
     #[expect(clippy::use_self, reason = "Clearer this way")]
+    #[inline]
     fn from(active: Active) -> Self {
         ((active.consumers as u32) << 16) | (active.producers as u32)
     }

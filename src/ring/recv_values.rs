@@ -1,11 +1,9 @@
+//! Logic for reading from a channel through a iterator.
 use crate::{
     Error,
     modes::{Claim, Mode},
     ring::{Ring, active::Last},
-    std::{
-        hint::cold_path,
-        sync::atomic::{Ordering::SeqCst, fence},
-    },
+    std::hint::cold_path,
 };
 
 /// A view into a part of the channel.
@@ -18,6 +16,9 @@ where
     P: Mode,
     C: Mode,
 {
+    /// What data we're allowed to access and the ring to access it in.
+    ///
+    /// If this is `None`, we either never had a claim or we've finished the claim.
     claim_and_ring: Option<(Claim, *const Ring<N, T, P, C>)>,
     /// The amount of items already consumed
     consumed: u32,
@@ -35,13 +36,17 @@ where
     /// Create a new value iterator.
     ///
     /// # Safety
-    /// `Claim` *must* contain non-zero entries.
+    /// `ring` must point to a valid, aligned [`Ring`]. This should always be the case if the caller
+    /// is currently registered with the ring.
+    ///
+    /// # Errors
+    /// Will return [`Error::Poisoned`] if the ring is poisoned and [`Error::TooManyConsumers`] if
+    /// there are already `u16::MAX - 1` consumers.
+    #[inline]
     pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>, claim: Claim) -> Result<Self, Error> {
-        // TODO: Why the fence?
-        fence(SeqCst);
+        // SAFETY: Caller guarantees the ring is valid
         unsafe {
-            // TODO: This is reachable if the channel is poisoned
-            (&*ring).register_consumer()?;
+            (&*ring).active().register_consumer()?;
         }
         let offset = claim.start();
         Ok(Self {
@@ -51,6 +56,10 @@ where
         })
     }
 
+    /// Create a new empty [`RecvValues`].
+    ///
+    /// It won't be registered in any ring and `Self::next` will always return `None`.
+    #[inline]
     pub(crate) const fn new_empty() -> Self {
         Self {
             claim_and_ring: None,
@@ -67,6 +76,10 @@ where
 {
     type Item = T;
 
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "This function is too large too inline"
+    )]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some((claim, ring)) = self.claim_and_ring.take() {
             // SAFETY: RecvValues is registered as a consumer, so ring is a valid reference
@@ -83,17 +96,29 @@ where
             }
             if self.consumed >= claim.entries() {
                 cold_path();
-                // SAFETY: We haven't deregistered yet
-                unsafe { (*ring).return_claim_cons(claim) };
-                match unsafe { (*ring).unregister_consumer().unwrap() } {
+                // SAFETY: We're still registered so the ring must be valid
+                unsafe {
+                    (*ring).return_claim_cons(claim);
+                }
+                // SAFETY: We're still registered so the ring must be valid
+                match unsafe {
+                    (*ring)
+                        .active()
+                        .unregister_consumer()
+                        .expect("Ring is poisoned!")
+                } {
                     Last::InCategory => {
                         // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
                         //         wait for the tail being marked.
-                        unsafe { (*ring).mark_cons_finished() };
+                        unsafe {
+                            (*ring).mark_cons_finished();
+                        }
                     }
                     Last::InRing => {
-                        // Drop the ring as we're the last
-                        unsafe { Ring::cleanup(ring) };
+                        // SAFETY: `Last::InRing` guarantees that we're the last
+                        unsafe {
+                            Ring::cleanup(ring);
+                        }
                     }
                     Last::NotLast => {}
                 }
@@ -107,6 +132,7 @@ where
         }
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let left = if let Some((claim, _)) = &self.claim_and_ring {
             (claim.entries() - self.offset) as usize
@@ -123,15 +149,19 @@ where
     P: Mode,
     C: Mode,
 {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "This function is too large too inline"
+    )]
     fn drop(&mut self) {
         if let Some((claim, ring)) = self.claim_and_ring.take() {
+            cold_path();
             while self.consumed != claim.entries() {
-                // SAFETY: Ring is valid while we haven't unregistered
-                let ring = unsafe { &*ring };
-                // SAFETY: The Claim guarantees we have exclusive access to this index and that
+                // SAFETY: Ring is valid while we haven't unregistered.
+                //         The Claim guarantees we have exclusive access to this index and that
                 //         there is a valid, intialized item at the index.
                 unsafe {
-                    ring.data()[self.offset as usize].with(|p| p.read().assume_init_drop());
+                    (*ring).data()[self.offset as usize].with(|p| p.read().assume_init_drop());
                 };
                 self.consumed += 1;
                 self.offset += 1;
@@ -141,17 +171,29 @@ where
                 }
             }
 
-            // SAFETY: We haven't deregistered yet
-            unsafe { (*ring).return_claim_cons(claim) };
-            match unsafe { (*ring).unregister_consumer().unwrap() } {
+            // SAFETY: We're still registered so the ring must be valid
+            unsafe {
+                (*ring).return_claim_cons(claim);
+            }
+            // SAFETY: We're still registered so the ring must be valid
+            match unsafe {
+                (*ring)
+                    .active()
+                    .unregister_consumer()
+                    .expect("Ring was poisoned!")
+            } {
                 Last::InCategory => {
                     // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
                     //         wait for the tail being marked.
-                    unsafe { (*ring).mark_cons_finished() };
+                    unsafe {
+                        (*ring).mark_cons_finished();
+                    }
                 }
                 Last::InRing => {
-                    // Drop the ring as we're the last
-                    unsafe { Ring::cleanup(ring) };
+                    // SAFETY: `Last::InRing` guarantees that we're the last
+                    unsafe {
+                        Ring::cleanup(ring);
+                    }
                 }
                 Last::NotLast => {}
             }
@@ -168,7 +210,7 @@ where
 
 #[cfg(feature = "trusted_len")]
 // SAFETY: The ExactSizeIterator implementation is always accurate
-unsafe impl<const N: usize, T, P, C> std::iter::TrustedLen for RecvValues<N, T, P, C>
+unsafe impl<const N: usize, T, P, C> core::iter::TrustedLen for RecvValues<N, T, P, C>
 where
     P: Mode,
     C: Mode,

@@ -1,3 +1,5 @@
+//! The user facing consumer implementation.
+
 use crate::{
     Error,
     modes::{FixedQueue, Mode, VariableQueue},
@@ -11,6 +13,9 @@ where
     P: Mode,
     C: Mode,
 {
+    /// The actual ring.
+    ///
+    /// This pointer is valid and aligned for the entire lifetime of [`Receiver`].
     ring: *const Ring<N, T, P, C>,
 }
 
@@ -23,12 +28,20 @@ where
     ///
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`].
-    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Self {
+    ///
+    /// # Errors
+    /// Will return [`Error::Closed`] or [`Error::Poisoned`], if the ring is in that state. It will
+    /// return [`Error::TooManyConsumers`] if there are already `u16::MAX - 1` consumers.
+    ///
+    /// Note: A [`RecvValues`] instance also counts as a consumer while [`RecvValues::next`] still
+    /// returns `Some`.
+    #[inline]
+    pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Result<Self, Error> {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
-            (*ring).register_consumer().unwrap();
+            (*ring).active().register_consumer()?;
         }
-        Self { ring }
+        Ok(Self { ring })
     }
 
     /// Create a new receiver but don't register it as active.
@@ -38,11 +51,15 @@ where
     /// # Safety
     /// `ring` must point to an initialized and aligned [`Ring`]. In addition,
     /// the active consumers counter must have already been incremented.
+    #[inline]
     pub(crate) unsafe fn new_no_register(ring: *const Ring<N, T, P, C>) -> Self {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
         unsafe {
             cold_path();
-            debug_assert!((*ring).active_consumers() == 1);
+            debug_assert!(
+                (*ring).active().consumers() == Ok(1),
+                "This function must only be called when initializing the ring"
+            );
         }
         Self { ring }
     }
@@ -50,8 +67,11 @@ where
     /// Try to get one item from the channel.
     ///
     /// # Errors
-    /// Returns [`Error::Empty`] when empty, [`Error::Closed`] when closed, and [`Error::Poisoned`]
-    /// when the ring is poisoned.
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. It can also
+    /// return [`Error::TooManyConsumers`] if there are already `u16::MAX - 1` instances of `Receiver`s
+    /// and [`RecvValues`].
+    #[inline]
     pub fn try_recv(&self) -> Result<T, Error> {
         match self.try_recv_bulk(1) {
             Ok(mut res) => {
@@ -75,9 +95,15 @@ where
     /// Dropping the iterator while it still has items, will also drop those items.
     ///
     /// # Errors
-    /// Returns [`Error::Empty`] when empty, [`Error::NotEnoughItems`] if there are items but not
-    /// as many as requested, [`Error::Closed`] when closed, and [`Error::Poisoned`]
-    /// when the ring is poisoned.
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. It can also
+    /// return [`Error::TooManyConsumers`] if there are already `u16::MAX - 1` instances of `Receiver`s
+    /// and [`RecvValues`].
+    ///
+    /// It can also return [`Error::NotEnoughItems`], which can also be successful on
+    /// a retry. It can also return [`Error::NotEnoughItemsAndClosed`] indicating that this will
+    /// keep failing with `try_recv_bulk` as there won't be new items.
+    #[inline]
     pub fn try_recv_bulk(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
@@ -95,8 +121,11 @@ where
     /// Dropping the iterator while it still has items, will also drop those items.
     ///
     /// # Errors
-    /// Returns [`Error::Empty`] when empty, [`Error::Closed`] when closed, and [`Error::Poisoned`]
-    /// when the ring is poisoned.
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. It can also
+    /// return [`Error::TooManyConsumers`] if there are already `u16::MAX - 1` instances of `Receiver`s
+    /// and [`RecvValues`].
+    #[inline]
     pub fn try_recv_burst(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
         // SAFETY: `self` is valid therefore `ring` is initialized and aligned.
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
@@ -111,9 +140,10 @@ where
     P: Mode,
     C: Mode + Sync,
 {
+    #[inline]
     fn clone(&self) -> Self {
         // SAFETY: because `self` is valid, `ring` is initialized and aligned.
-        unsafe { Self::new(self.ring) }
+        unsafe { Self::new(self.ring).expect("Failed to clone consumer!") }
     }
 }
 
@@ -122,15 +152,25 @@ where
     P: Mode,
     C: Mode,
 {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "This function is too large too inline"
+    )]
     fn drop(&mut self) {
         if panicking() {
+            cold_path();
+            // SAFETY: Ring is valid before we call unregister_consumer
             unsafe {
-                // SAFETY: Ring is valid before we call unregister_consumer
                 (*self.ring).poison();
             }
         } else {
             // SAFETY: Ring is valid before we call unregister_consumer
-            match unsafe { (*self.ring).unregister_consumer().unwrap() } {
+            match unsafe {
+                (*self.ring)
+                    .active()
+                    .unregister_consumer()
+                    .expect("Ring is poisoned!")
+            } {
                 Last::InCategory => {
                     // SAFETY: Even if another thread starts the ring cleanup, the cleanup will
                     // wait for the tail being marked.
@@ -139,7 +179,7 @@ where
                     }
                 }
                 Last::InRing => {
-                    // Drop the ring as we're last
+                    // SAFETY: `Last::InRing` guarantees that we're the last
                     unsafe { Ring::cleanup(self.ring) }
                 }
                 Last::NotLast => {}

@@ -1,3 +1,4 @@
+//! The core logic of the ring.
 pub mod active;
 pub mod recv_values;
 
@@ -7,10 +8,7 @@ use crate::{
     consumer::Receiver,
     modes::{Claim, Mode},
     producer::Sender,
-    ring::{
-        active::{AtomicActive, Last},
-        recv_values::RecvValues,
-    },
+    ring::{active::AtomicActive, recv_values::RecvValues},
     std::{
         alloc::{Layout, alloc, dealloc, handle_alloc_error},
         cell::UnsafeCell,
@@ -19,9 +17,9 @@ use crate::{
         sync::atomic::Ordering::SeqCst,
     },
 };
-use std::{marker::PhantomData, mem::offset_of, num::NonZeroU32, ops::Deref};
+use core::{mem::offset_of, num::NonZeroU32, ops::Deref as _};
 
-/// A ringbuffer.
+/// A ring buffer.
 ///
 /// # Generics
 /// - `N`, the capacity of the channel. Must be equal to `2.pow(m)-1` where `m >= 1 && m <= 31`.
@@ -33,13 +31,19 @@ where
     P: Mode,
     C: Mode,
 {
-    phantom: PhantomData<T>,
-    /// Active producers and consumers.
+    /// Tracks the active producers and consumers.
     ///
-    /// Where the first u16 is the producers and the second u16 is the consumers (`0xPPPP_CCCC`).
+    /// It can also be used to check if the ring is poisoned.
     active: CachePadded<AtomicActive>,
+    /// The head and tail of the producers.
     prod_headtail: CachePadded<P>,
+    /// The head and tail of the consumers.
     cons_headtail: CachePadded<C>,
+    /// The actual data of the ring.
+    ///
+    /// # Safety
+    /// If an index is between the consumer head and producer tail it **must** be initialized.
+    /// A [`Claim`] to a range **must** be owned before trying to access any index in that range.
     data: CachePadded<[UnsafeCell<MaybeUninit<T>>; N]>,
 }
 
@@ -70,6 +74,7 @@ where
 
         // Allocate the ring
         let layout = Layout::new::<Self>();
+        // SAFETY: Layout is valid
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
             cold_path();
@@ -77,7 +82,7 @@ where
         }
 
         // Initialize the ring
-        // SAFETY: this is the only pointer to the data, no references exist
+        // SAFETY: Pointer is not null. The allocation is valid and aligned.
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "The pointers are guaranteed aligned by Layout"
@@ -94,10 +99,9 @@ where
                 .write(CachePadded::default());
             ptr.add(offset_of!(Self, data))
                 .cast::<CachePadded<[UnsafeCell<MaybeUninit<T>>; N]>>()
-                .write(CachePadded::new(std::array::from_fn(|_| {
+                .write(CachePadded::new(core::array::from_fn(|_| {
                     UnsafeCell::new(MaybeUninit::uninit())
                 })));
-            // phantom is a ZST and can not be initialized (and doesn't need to be either)
         }
 
         // The ring is now initialized and valid
@@ -114,17 +118,26 @@ where
         (sender, receiver)
     }
 
-    /// Deallocate the ringbuffer.
+    /// Deallocate the ring buffer.
     ///
     /// It will wait for both `cons_headtail` and `prod_headtail` to be marked as finished.
     ///
     /// # Safety
     /// The caller *must* be the last with access to the ring and already unregistered (i.e. `self.active == 0`).
+    ///
+    /// # Panics
+    /// Will panic if the ring still has active producers and/or consumers. It will also panic if
+    /// the ring is poisoned.
+    ///
     pub unsafe fn cleanup(ring: *const Self) {
         // SAFETY: Ring is still valid before we call dealloc
         unsafe {
             assert!(
-                (*ring).active.load(SeqCst).is_empty(),
+                (*ring)
+                    .active
+                    .load(SeqCst)
+                    .is_empty()
+                    .expect("The ring is poisoned!"),
                 "Still active consumers and/or producers"
             );
             // Wait for the tails to be marked as finished. This is needed as one side can see it's
@@ -133,16 +146,21 @@ where
             while !(*ring).cons_headtail.is_finished() && !(*ring).prod_headtail.is_finished() {
                 spin_loop();
             }
-        };
+        }
 
         let layout = Layout::new::<Self>();
-        unsafe { dealloc(ring.cast::<u8>().cast_mut(), layout) };
+        // SAFETY: `ring` is allocated as this function must only be called once, and the layout
+        //         is the same.
+        unsafe {
+            dealloc(ring.cast::<u8>().cast_mut(), layout);
+        }
     }
 
     /// Mark the prod tail as finished.
     ///
     /// # Safety
     /// This *must* only be called by the last producer.
+    #[inline]
     pub unsafe fn mark_prod_finished(&self) {
         self.prod_headtail.mark_finished();
     }
@@ -151,15 +169,33 @@ where
     ///
     /// # Safety
     /// This *must* only be called by the last consumer.
+    #[inline]
     pub unsafe fn mark_cons_finished(&self) {
         self.cons_headtail.mark_finished();
     }
 
+    /// Get access to the producer and consumer tracking.
+    pub fn active(&self) -> &AtomicActive {
+        &self.active
+    }
+
     /// Get a reference to the data part of the ring.
+    #[inline]
     fn data(&self) -> &[UnsafeCell<MaybeUninit<T>>; N] {
         self.data.deref()
     }
 
+    /// Try to enqueue `n` items to the ring.
+    ///
+    /// If `Q` is [`FixedQueue`] the enqueue will fail if there isn't room for at least `n` entries.
+    /// With [`VariableQueue`] it can enqueue less than `n` items, leaving the remainder of the items
+    /// in the iterator.
+    ///
+    /// # Errors
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. If `Q` is
+    /// [`FixedQueue`] it can also return [`Error::NotEnoughSpace`], which can also be successful on
+    /// a retry.
     pub fn try_enqueue<I, Q>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
@@ -174,6 +210,14 @@ where
             .move_head::<N, true, Q, _>(self.cons_headtail.deref(), len)
         {
             Ok(claim) => claim,
+            Err(Error::Closed) => {
+                cold_path();
+                if self.active.is_poisoned() {
+                    return Err(Error::Poisoned);
+                } else {
+                    return Err(Error::Closed);
+                }
+            }
             Err(err) => {
                 cold_path();
                 return Err(err);
@@ -200,6 +244,19 @@ where
         Ok(n)
     }
 
+    /// Try to dequeue `n` items from the ring.
+    ///
+    /// If `Q` is [`FixedQueue`] the dequeue will fail if there aren't at least `n` entries.
+    /// With [`VariableQueue`] it can return less than `n` items.
+    ///
+    /// # Errors
+    /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
+    /// one of those states. The last one indicates that retrying can be successful. If `Q` is
+    /// [`FixedQueue`] it can also return [`Error::NotEnoughItems`], which can also be successful on
+    /// a retry. It can also return [`Error::NotEnoughItemsAndClosed`] indicating that this will
+    /// keep failing with [`FixedQueue`] as there won't be new items.
+    ///
+    /// If there are a lot of consumers it can also return [`Error::TooManyConsumers`].
     pub fn try_dequeue<Q>(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error>
     where
         Q: crate::modes::QueueBehaviour,
@@ -213,47 +270,40 @@ where
             .move_head::<N, false, Q, _>(self.prod_headtail.deref(), len)
         {
             Ok(claim) => claim,
+            Err(Error::Closed) => {
+                cold_path();
+                if self.active.is_poisoned() {
+                    return Err(Error::Poisoned);
+                } else {
+                    return Err(Error::Closed);
+                }
+            }
             Err(err) => {
                 cold_path();
                 return Err(err);
             }
         };
 
+        // SAFETY: The ring is valid
         unsafe { RecvValues::new(self, claim) }
     }
 
+    /// Used by [`RecvValues`] to return its [`Claim`].
+    #[inline]
     pub fn return_claim_cons(&self, claim: Claim) {
         self.cons_headtail.update_tail::<N>(claim);
     }
 
+    /// Poison the ring.
+    ///
+    /// After calling this function every function will return [`Error::Poisoned`] or panic.
+    ///
+    /// This **should** be called if a [`Consumer`], [`Producer`], or [`RecvValues`] panics while holding
+    /// a [`Claim`]. Otherwise, the ring will be stuck.
+    #[inline]
     pub fn poison(&self) {
-        // TODO: also poison headtails
         self.active.poison();
-    }
-}
-
-/// Functions for keeping track of the active consumers and producers.
-impl<const N: usize, T, P, C> Ring<N, T, P, C>
-where
-    P: Mode,
-    C: Mode,
-{
-    pub fn register_producer(&self) -> Result<(), Error> {
-        self.active.register_producer()
-    }
-    pub fn register_consumer(&self) -> Result<(), Error> {
-        self.active.register_consumer()
-    }
-    pub fn unregister_producer(&self) -> Result<Last, Error> {
-        self.active.unregister_producer()
-    }
-    pub fn unregister_consumer(&self) -> Result<Last, Error> {
-        self.active.unregister_consumer()
-    }
-    pub fn active_producers(&self) -> u16 {
-        self.active.active_producers()
-    }
-    pub fn active_consumers(&self) -> u16 {
-        self.active.active_consumers()
+        self.cons_headtail.mark_finished();
+        self.prod_headtail.mark_finished();
     }
 }

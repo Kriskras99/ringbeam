@@ -1,3 +1,5 @@
+//! Implementation for a single-threaded consumer or producer.
+
 use crate::{
     Error,
     modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
@@ -7,7 +9,7 @@ use crate::{
         fence,
     },
 };
-use std::{marker::PhantomData, num::NonZeroU32};
+use core::{marker::PhantomData, num::NonZeroU32};
 
 /// A single threaded consumer or producer.
 #[derive(Default)]
@@ -21,6 +23,7 @@ pub struct Single {
     ///
     /// This is an atomic because it's used by the other headtail for synchronisation.
     tail: AtomicU32,
+    /// `Single` must absolutely not be shared.
     _not_sync: PhantomData<*mut ()>,
 }
 
@@ -28,7 +31,7 @@ impl ModeInner for Single {
     fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
         &self,
         other: &Other,
-        n: NonZeroU32,
+        expected: NonZeroU32,
     ) -> Result<Claim, Error> {
         // Get the current head
         let old_head = self.head.load(Relaxed);
@@ -41,27 +44,33 @@ impl ModeInner for Single {
         // Sync with update_tail Release (github.com/DPDK/dpdk/commit/9ed8770)
         let other_tail = other.load_tail(Acquire);
 
-        let n = calculate_available::<N, IS_PROD, Q>(old_head, other_tail, n)?;
+        let available = calculate_available::<N, IS_PROD, Q>(old_head, other_tail, expected)?;
 
-        let new_head = old_head.wrapping_add(n.get()) & (N as u32 - 1);
+        let new_head = old_head.wrapping_add(available.get()) & (N as u32 - 1);
 
         self.head.store(new_head, Relaxed);
-        Ok(Claim::many(n, old_head))
+        Ok(Claim::many(available, old_head))
     }
 
+    #[inline]
     fn update_tail<const N: usize>(&self, claim: Claim) {
         let new_tail = claim.new_tail::<N>();
         self.tail.store(new_tail, Release);
     }
 
+    #[inline]
     fn load_tail(&self, ordering: Ordering) -> u32 {
         // TODO: Maybe this can always be Relaxed for Single?
         self.tail.load(ordering)
     }
+
+    #[inline]
     fn mark_finished(&self) {
         let res = self.tail.fetch_or(0x8000_0000, Relaxed);
         assert_eq!(res & 0x8000_0000, 0, "Tail was already marked as finished!");
     }
+
+    #[inline]
     fn is_finished(&self) -> bool {
         self.tail.load(Relaxed) & 0x8000_0000 != 0
     }
