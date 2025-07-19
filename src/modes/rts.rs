@@ -114,7 +114,9 @@ impl ModeInner for RelaxedTailSync {
         let mut old_head = self.head.load(Acquire);
 
         loop {
-            while old_head.pos - old_head.cnt > self.htd_max.get() {
+            while old_head.pos.wrapping_sub(self.tail.load(Acquire).pos) & (N as u32 - 1)
+                > self.htd_max.get()
+            {
                 spin_loop();
                 old_head = self.head.load(Acquire);
             }
@@ -143,7 +145,6 @@ impl ModeInner for RelaxedTailSync {
     }
 
     fn update_tail<const N: usize>(&self, claim: Claim) {
-        // TODO: This is broken, tail.pos is never updated
         let mut old_tail = self.tail.load(Acquire);
         let _ = claim.new_tail::<N>();
         loop {
@@ -152,6 +153,7 @@ impl ModeInner for RelaxedTailSync {
                 cnt: old_tail.cnt.wrapping_add(1) & (N as u32 - 1),
                 pos: old_tail.pos,
             };
+            // If we've caught up to the rest, update the tail
             if new_tail.cnt == head.cnt {
                 new_tail.pos = head.pos;
             }

@@ -143,14 +143,9 @@ impl Claim {
     #[must_use]
     #[inline]
     pub const fn new_tail<const N: usize>(self) -> u32 {
-        let new = self.start as u64 + self.entries.get() as u64;
+        let new = self.start.wrapping_add(self.entries.get()) & (N as u32 - 1);
         let _dont_drop_self = ManuallyDrop::new(self);
-        if new >= N as u64 {
-            cold_path();
-            (new - N as u64) as u32
-        } else {
-            new as u32
-        }
+        new
     }
 }
 

@@ -89,11 +89,7 @@ where
                 unsafe { (*ring).data()[self.offset as usize].with(|p| p.read().assume_init()) };
 
             self.consumed += 1;
-            self.offset += 1;
-            if self.offset as usize >= N {
-                cold_path();
-                self.offset = 0;
-            }
+            self.offset = self.offset.wrapping_add(1) & (N as u32 - 1);
             if self.consumed >= claim.entries() {
                 cold_path();
                 // SAFETY: We're still registered so the ring must be valid
@@ -135,7 +131,7 @@ where
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let left = if let Some((claim, _)) = &self.claim_and_ring {
-            (claim.entries() - self.offset) as usize
+            (claim.entries() - self.consumed) as usize
         } else {
             cold_path();
             0
@@ -164,11 +160,7 @@ where
                     (*ring).data()[self.offset as usize].with(|p| p.read().assume_init_drop());
                 };
                 self.consumed += 1;
-                self.offset += 1;
-                if self.offset as usize >= N {
-                    cold_path();
-                    self.offset = 0;
-                }
+                self.offset = self.offset.wrapping_add(1) & (N as u32 - 1);
             }
 
             // SAFETY: We're still registered so the ring must be valid

@@ -205,32 +205,27 @@ where
             cold_path();
             return Ok(0);
         };
-        let claim = match self
+
+        let claim = self
             .prod_headtail
             .move_head::<N, true, Q, _>(self.cons_headtail.deref(), len)
-        {
-            Ok(claim) => claim,
-            Err(Error::Closed) => {
+            .map_err(|err| {
                 cold_path();
-                if self.active.is_poisoned() {
-                    return Err(Error::Poisoned);
+                if err == Error::Closed {
+                    cold_path();
+                    if self.active.is_poisoned() {
+                        Error::Poisoned
+                    } else {
+                        Error::Closed
+                    }
                 } else {
-                    return Err(Error::Closed);
+                    err
                 }
-            }
-            Err(err) => {
-                cold_path();
-                return Err(err);
-            }
-        };
+            })?;
 
         let data = self.data();
         for (i, value) in values.take(claim.entries() as usize).enumerate() {
-            let mut offset = i + claim.start() as usize;
-            if offset >= N {
-                cold_path();
-                offset -= N;
-            }
+            let offset = i.wrapping_add(claim.start() as usize) & (N - 1);
             // SAFETY: Our Claim gives exclusive access to this index
             unsafe {
                 data[offset].with_mut(|p| (&mut *p).write(value));
@@ -265,24 +260,22 @@ where
             cold_path();
             return Ok(RecvValues::new_empty());
         };
-        let claim = match self
+        let claim = self
             .cons_headtail
             .move_head::<N, false, Q, _>(self.prod_headtail.deref(), len)
-        {
-            Ok(claim) => claim,
-            Err(Error::Closed) => {
+            .map_err(|err| {
                 cold_path();
-                if self.active.is_poisoned() {
-                    return Err(Error::Poisoned);
+                if err == Error::Closed {
+                    cold_path();
+                    if self.active.is_poisoned() {
+                        Error::Poisoned
+                    } else {
+                        Error::Closed
+                    }
                 } else {
-                    return Err(Error::Closed);
+                    err
                 }
-            }
-            Err(err) => {
-                cold_path();
-                return Err(err);
-            }
-        };
+            })?;
 
         // SAFETY: The ring is valid
         unsafe { RecvValues::new(self, claim) }
