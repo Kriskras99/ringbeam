@@ -2,7 +2,7 @@
 
 use crate::{
     Error,
-    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
+    modes::{Claim, Mode, ModeInner, calculate_available},
     std::{
         hint::{cold_path, spin_loop},
         sync::atomic::{
@@ -83,7 +83,7 @@ impl HeadTailSync {
 }
 
 impl ModeInner for HeadTailSync {
-    fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
+    fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,
         other: &Other,
         expected: NonZeroU32,
@@ -99,7 +99,7 @@ impl ModeInner for HeadTailSync {
 
             let other_tail = other.load_tail(Relaxed);
 
-            let available = calculate_available::<N, IS_PROD, Q>(old.head, other_tail, expected)?;
+            let available = calculate_available::<N, IS_PROD, EXACT>(old.head, other_tail, expected)?;
 
             let new = HeadTail {
                 head: old.head.wrapping_add(available.get()) & (N as u32 - 1),

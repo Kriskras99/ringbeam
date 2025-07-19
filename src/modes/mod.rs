@@ -33,16 +33,16 @@ pub(crate) trait ModeInner: Default {
     /// # Generics
     /// - `N`: The ring size.
     /// - `IS_PROD`: Is the headtail a producer.
-    /// - `Q`: What to do when there is not enough room for all items, see [`QueueBehaviour`].
+    /// - `EXACT`: Does the caller want exactly `expected` items, or is fewer also fine.
     /// - `Other`: The mode of the other headtail on the ring.
     ///
     /// # Errors
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
-    /// one of those states. The last one indicates that retrying can be successful. If `Q` is
-    /// [`FixedQueue`] it can also return [`Error::NotEnoughSpace`]/[`Error::NotEnoughItems`],
+    /// one of those states. The last one indicates that retrying can be successful. If `EXACT` it
+    /// can also return [`Error::NotEnoughSpace`]/[`Error::NotEnoughItems`],
     /// which can also be successful on a retry. If `IS_PROD` it can also return [`Error::NotEnoughItemsAndClosed`]
-    /// which can be successful on a retry with <code>Q: [FixedQueue]</code>.
-    fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
+    /// which can be successful on a retry with `EXACT: false`.
+    fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,
         other: &Other,
         expected: NonZeroU32,
@@ -68,26 +68,6 @@ pub(crate) trait ModeInner: Default {
     fn is_finished(&self) -> bool;
 }
 
-/// What to do when there is not enough room for (de)queueing all items.
-///
-/// When `FIXED` is `true`, then it will give up. Otherwise, it will just (de)queue less.
-pub(crate) trait QueueBehaviour {
-    /// Does the caller want the exact amount of entries.
-    const FIXED: bool;
-}
-
-/// Only accept exactly the amount of entries.
-pub(crate) enum FixedQueue {}
-impl QueueBehaviour for FixedQueue {
-    const FIXED: bool = true;
-}
-
-/// Accept less than the requested amount of entries.
-pub(crate) enum VariableQueue {}
-impl QueueBehaviour for VariableQueue {
-    const FIXED: bool = false;
-}
-
 /// A unique claim to a part of the ring.
 ///
 /// Can be acquired using [`ModeInner::move_head`]. When acquired with `IS_PROD: true` then the
@@ -96,7 +76,7 @@ impl QueueBehaviour for VariableQueue {
 ///
 /// A claim **must** be fully consumed before being returned.
 #[must_use]
-pub struct Claim {
+pub(crate) struct Claim {
     /// The amount of entries from `start` which are part of the claim.
     entries: NonZeroU32,
     /// The place in the ring where the claim starts.
@@ -169,11 +149,11 @@ impl Drop for Claim {
 ///
 /// # Errors
 /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
-/// one of those states. The last one indicates that retrying can be successful. If `Q` is
-/// [`FixedQueue`] it can also return [`Error::NotEnoughSpace`]/[`Error::NotEnoughItems`],
-/// which can also be successful on a retry. If `IS_PROD` it can also return [`Error::NotEnoughItemsAndClosed`]
-/// which can be successful on a retry with <code>Q: [FixedQueue]</code>.
-fn calculate_available<const N: usize, const IS_PROD: bool, Q: QueueBehaviour>(
+/// one of those states. The last one indicates that retrying can be successful. If `EXACT` it can
+/// also return [`Error::NotEnoughSpace`]/[`Error::NotEnoughItems`], which can also be successful on
+/// a retry. If `IS_PROD` it can also return [`Error::NotEnoughItemsAndClosed`] which can be successful
+/// on a retry with `EXACT: false`.
+fn calculate_available<const N: usize, const IS_PROD: bool, const EXACT: bool>(
     head: u32,
     tail: u32,
     expected: NonZeroU32,
@@ -199,7 +179,7 @@ fn calculate_available<const N: usize, const IS_PROD: bool, Q: QueueBehaviour>(
         } else {
             Err(Error::Empty)
         }
-    } else if Q::FIXED && expected.get() > available {
+    } else if EXACT && expected.get() > available {
         cold_path();
         if IS_PROD {
             Err(Error::NotEnoughSpace)

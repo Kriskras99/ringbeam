@@ -2,7 +2,7 @@
 
 use crate::{
     Error,
-    modes::{FixedQueue, Mode, VariableQueue},
+    modes::Mode,
     ring::{Ring, active::Last},
     std::hint::cold_path,
 };
@@ -102,7 +102,7 @@ where
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
 
-        ring.try_enqueue::<I, FixedQueue>(values)
+        ring.try_enqueue::<true, I>(values)
     }
 
     /// Try to put as many values as possible into the channel.
@@ -127,7 +127,7 @@ where
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
 
-        ring.try_enqueue::<I, VariableQueue>(values)
+        ring.try_enqueue::<false, I>(values)
     }
 }
 

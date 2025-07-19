@@ -2,7 +2,7 @@
 
 use crate::{
     Error,
-    modes::{Claim, Mode, ModeInner, QueueBehaviour, calculate_available},
+    modes::{Claim, Mode, ModeInner, calculate_available},
     std::{
         hint::{cold_path, spin_loop},
         sync::atomic::{
@@ -105,7 +105,7 @@ impl AtomicPosCnt {
 }
 
 impl ModeInner for RelaxedTailSync {
-    fn move_head<const N: usize, const IS_PROD: bool, Q: QueueBehaviour, Other: Mode>(
+    fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,
         other: &Other,
         expected: NonZeroU32,
@@ -124,7 +124,7 @@ impl ModeInner for RelaxedTailSync {
             let other_tail = other.load_tail(Acquire);
 
             let available =
-                calculate_available::<N, IS_PROD, Q>(old_head.pos, other_tail, expected)?;
+                calculate_available::<N, IS_PROD, EXACT>(old_head.pos, other_tail, expected)?;
 
             let new_head = PosCnt {
                 pos: old_head.pos.wrapping_add(available.get()) & (N as u32 - 1),

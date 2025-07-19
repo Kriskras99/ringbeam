@@ -187,19 +187,16 @@ where
 
     /// Try to enqueue `n` items to the ring.
     ///
-    /// If `Q` is [`FixedQueue`] the enqueue will fail if there isn't room for at least `n` entries.
-    /// With [`VariableQueue`] it can enqueue less than `n` items, leaving the remainder of the items
-    /// in the iterator.
+    /// If `EXACT` the enqueue will fail if there isn't room for at least `n` entries, otherwise it
+    /// can enqueue less than `n` items, leaving the remainder of the items in the iterator.
     ///
     /// # Errors
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
-    /// one of those states. The last one indicates that retrying can be successful. If `Q` is
-    /// [`FixedQueue`] it can also return [`Error::NotEnoughSpace`], which can also be successful on
-    /// a retry.
-    pub fn try_enqueue<I, Q>(&self, values: &mut I) -> Result<usize, Error>
+    /// one of those states. The last one indicates that retrying can be successful. If `EXACT` it
+    /// can also return [`Error::NotEnoughSpace`], which can also be successful on a retry.
+    pub fn try_enqueue<const EXACT: bool, I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
-        Q: crate::modes::QueueBehaviour,
     {
         let Some(len) = NonZeroU32::new(values.len() as u32) else {
             cold_path();
@@ -208,7 +205,7 @@ where
 
         let claim = self
             .prod_headtail
-            .move_head::<N, true, Q, _>(self.cons_headtail.deref(), len)
+            .move_head::<N, true, EXACT, _>(self.cons_headtail.deref(), len)
             .map_err(|err| {
                 cold_path();
                 if err == Error::Closed {
@@ -241,28 +238,24 @@ where
 
     /// Try to dequeue `n` items from the ring.
     ///
-    /// If `Q` is [`FixedQueue`] the dequeue will fail if there aren't at least `n` entries.
-    /// With [`VariableQueue`] it can return less than `n` items.
+    /// If `EXACT` the dequeue will fail if there aren't at least `n` entries, otherwise it can
+    /// return less than `n` items.
     ///
     /// # Errors
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
-    /// one of those states. The last one indicates that retrying can be successful. If `Q` is
-    /// [`FixedQueue`] it can also return [`Error::NotEnoughItems`], which can also be successful on
-    /// a retry. It can also return [`Error::NotEnoughItemsAndClosed`] indicating that this will
-    /// keep failing with [`FixedQueue`] as there won't be new items.
+    /// one of those states. The last one indicates that retrying can be successful. If `EXACT` it
+    /// can also return [`Error::NotEnoughItems`], which can also be successful on a retry. It can
+    /// also return [`Error::NotEnoughItemsAndClosed`] where retrying can be successful with `EXACT: false`.
     ///
-    /// If there are a lot of consumers it can also return [`Error::TooManyConsumers`].
-    pub fn try_dequeue<Q>(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error>
-    where
-        Q: crate::modes::QueueBehaviour,
-    {
+    /// If there are `u16::MAX - 1` consumers it can also return [`Error::TooManyConsumers`].
+    pub fn try_dequeue<const EXACT: bool>(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
         let Some(len) = NonZeroU32::new(n as u32) else {
             cold_path();
             return Ok(RecvValues::new_empty());
         };
         let claim = self
             .cons_headtail
-            .move_head::<N, false, Q, _>(self.prod_headtail.deref(), len)
+            .move_head::<N, false, EXACT, _>(self.prod_headtail.deref(), len)
             .map_err(|err| {
                 cold_path();
                 if err == Error::Closed {

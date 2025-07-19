@@ -2,7 +2,7 @@
 
 use crate::{
     Error,
-    modes::{FixedQueue, Mode, VariableQueue},
+    modes::Mode,
     ring::{Ring, active::Last, recv_values::RecvValues},
     std::hint::cold_path,
 };
@@ -109,7 +109,7 @@ where
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
 
-        ring.try_dequeue::<FixedQueue>(n)
+        ring.try_dequeue::<true>(n)
     }
 
     /// Try to get at most `n` items from the channel.
@@ -131,7 +131,7 @@ where
         //         No mutable aliasing in the ring except for inside the UnsafeCell.
         let ring = unsafe { &*self.ring };
 
-        ring.try_dequeue::<VariableQueue>(n)
+        ring.try_dequeue::<false>(n)
     }
 }
 
