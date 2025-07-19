@@ -29,19 +29,27 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
 cargo = { level = "warn", priority = -1 }
-missing_inline_in_public_items = "warn"
-std_instead_of_core = "warn"
+missing_assert_message = "warn"
 missing_docs_in_private_items = "warn"
 missing_errors_doc = "warn"
-undocumented_unsafe_blocks = "warn"
-semicolon_inside_block = "warn"
+missing_inline_in_public_items = "warn"
 missing_panics_doc = "warn"
+renamed_function_params = "warn"
+semicolon_inside_block = "warn"
+std_instead_of_core = "warn"
+undocumented_unsafe_blocks = "warn"
 unused_trait_names = "warn"
 unwrap_used = "warn"
-missing_assert_message = "warn"
-renamed_function_params = "warn"
 # This needs to be done constantly, because N needs to be usize but the calculations u32
 cast_possible_truncation = "allow"
 cast_lossless = "allow"
 # .deref() looks beter than &*
 explicit_deref_methods = "allow"
+
+[lints.rust]
+missing_docs = "warn"
+
+[lints.rustdoc]
+missing_crate_level_docs = "warn"
+private_doc_tests = "warn"
+unescaped_backticks = "warn"

@@ -7,19 +7,11 @@ compile_error!("Features 'loom' and 'shuttle' cannot be enabled at the same time
 
 mod cache_padded;
 mod consumer;
-pub mod modes;
+mod modes;
 mod producer;
 mod ring;
 mod std;
 
-pub use consumer::Receiver;
-pub use producer::Sender;
-pub use ring::recv_values::RecvValues;
-
-use crate::{
-    modes::{HeadTailSync, Mode, Multi, RelaxedTailSync, Single},
-    ring::Ring,
-};
 use thiserror::Error;
 
 // TODO: Use consistent naming for producer/consumer or sender/receiver throughout.
@@ -30,148 +22,160 @@ use thiserror::Error;
 // TODO: WFE/SEV on ARM
 // TODO: Document the inner workings of the various modes in their module documentation.
 
+/// All errors that can be returned when accessing the channel.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
+    /// The channel is closed.
     #[error("Channel is closed")]
     Closed,
+    /// The channel is empty.
     #[error("Channel is empty")]
     Empty,
+    /// The channel is full.
     #[error("Channel is full")]
     Full,
+    /// The caller requested exactly `n` items, but there were not enough items in the channel.
     #[error("Channel had a few items, but not as many as requested")]
     NotEnoughItems,
+    /// The caller requested exactly `n` items, but the channel is closed and only has fewer items left.
     #[error("Channel is closed but still had a few items, but not as many as requested")]
     NotEnoughItemsAndClosed,
+    /// The caller wants to put exactly `n` items in the channel, but there is not enough room.
     #[error("Channel had room, but not enough room for all the items")]
     NotEnoughSpace,
+    /// A panic occurred while holding access to the channel, so the channel is in an undefined state.
     #[error("Channel is poisoned")]
     Poisoned,
+    /// There are too many consumers, a new one can't be added.
+    ///
+    /// The current limit is `u16::MAX - 1`
     #[error("Maximum amount of consumers in channel has been reached")]
     TooManyConsumers,
+    /// There are too many producers, a new one can't be added.
+    ///
+    /// The current limit is `u16::MAX - 1`
     #[error("Maximum amount of producers in channel has been reached")]
     TooManyProducers,
 }
 
-/// A producer which can be cloned to multiple threads.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
-pub type Mp<const N: usize, T, C> = Sender<N, T, Multi, C>;
+/// A channel with a custom configuration.
+pub mod custom {
+    pub use crate::{consumer::Receiver, producer::Sender, ring::recv_values::RecvValues};
+    use crate::{modes::Mode, ring::Ring};
 
-/// A producer which can be cloned to multiple threads but only allows one producer active at a time.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
-pub type MpHts<const N: usize, T, C> = Sender<N, T, HeadTailSync, C>;
+    /// The synchronisation modes that can be used with the custom channel.
+    pub mod modes {
+        pub use crate::modes::{HeadTailSync, Mode, Multi, RelaxedTailSync, Single};
+    }
 
-/// A producer which can be cloned to multiple threads where the last producer moves the tail.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
-pub type MpRts<const N: usize, T, C> = Sender<N, T, RelaxedTailSync, C>;
-
-/// A producer which can only be on a single thread.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
-pub type Sp<const N: usize, T, C> = Sender<N, T, Single, C>;
-
-/// A consumer which can be cloned to multiple threads.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`Mode`]),
-pub type Mc<const N: usize, T, P> = Receiver<N, T, P, Multi>;
-
-/// A consumer which can be cloned to multiple threads but only allows one consumer active at a time.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`Mode`]),
-pub type McHts<const N: usize, T, P> = Receiver<N, T, P, HeadTailSync>;
-
-/// A consumer which can be cloned to multiple threads where the last consumer moves the tail.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`Mode`]),
-pub type McRts<const N: usize, T, P> = Receiver<N, T, P, RelaxedTailSync>;
-
-/// A consumer which can only be on a single thread.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`Mode`]),
-pub type Sc<const N: usize, T, P> = Receiver<N, T, P, Single>;
-
-/// Create a multi-producer/multi-consumer channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn mpmc<const N: usize, T>() -> (Mp<N, T, Multi>, Mc<N, T, Multi>) {
-    Ring::new()
+    /// Create a custom channel with space for `N` values of `T`.
+    ///
+    /// # Type parameters
+    /// - N: the size of the channel,
+    /// - T: the type that will be sent over the channel,
+    /// - P: the sync mode of the producer head and tail (see [`Mode`]),
+    /// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+    #[must_use]
+    #[inline]
+    pub fn bounded<const N: usize, T, P, C>() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>)
+    where
+        P: Mode,
+        C: Mode,
+    {
+        Ring::new()
+    }
 }
 
-/// Create a multi-producer/multi-consumer (HTS) channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn mpmc_hts<const N: usize, T>() -> (MpHts<N, T, HeadTailSync>, McHts<N, T, HeadTailSync>) {
-    Ring::new()
+/// A single-producer single-consumer channel.
+pub mod spsc {
+    use crate::{modes::Single, ring::Ring};
+
+    /// The receiving half of a bounded single-producer single-consumer channel.
+    pub type Receiver<const N: usize, T> = crate::consumer::Receiver<N, T, Single, Single>;
+
+    /// The sending half of a bounded single-producer single-consumer channel.
+    pub type Sender<const N: usize, T> = crate::producer::Sender<N, T, Single, Single>;
+
+    /// An iterator over the values read by a [`Receiver`].
+    pub type RecvValues<const N: usize, T> =
+        crate::ring::recv_values::RecvValues<N, T, Single, Single>;
+
+    /// Create a single-producer single-consumer channel with space for `N` values of `T`.
+    #[must_use]
+    #[inline]
+    pub fn bounded<const N: usize, T>() -> (Sender<N, T>, Receiver<N, T>) {
+        Ring::new()
+    }
 }
 
-/// Create a multi-producer/multi-consumer (RTS) channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn mpmc_rts<const N: usize, T>() -> (MpRts<N, T, RelaxedTailSync>, McRts<N, T, RelaxedTailSync>)
-{
-    Ring::new()
+/// A single-producer multi-consumer channel.
+pub mod spmc {
+    use crate::{
+        modes::{Multi, Single},
+        ring::Ring,
+    };
+
+    /// The receiving half of a bounded single-producer multi-consumer channel.
+    pub type Receiver<const N: usize, T> = crate::consumer::Receiver<N, T, Single, Multi>;
+
+    /// The sending half of a bounded single-producer multi-consumer channel.
+    pub type Sender<const N: usize, T> = crate::producer::Sender<N, T, Single, Multi>;
+
+    /// An iterator over the values read by a [`Receiver`].
+    pub type RecvValues<const N: usize, T> =
+        crate::ring::recv_values::RecvValues<N, T, Single, Multi>;
+
+    /// Create a single-producer multi-consumer channel with space for `N` values of `T`.
+    #[must_use]
+    #[inline]
+    pub fn bounded<const N: usize, T>() -> (Sender<N, T>, Receiver<N, T>) {
+        Ring::new()
+    }
 }
 
-/// Create a multi-producer/single-consumer channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn mpsc<const N: usize, T>() -> (Mp<N, T, Single>, Sc<N, T, Multi>) {
-    Ring::new()
+/// A multi-producer single-consumer channel.
+pub mod mpsc {
+    use crate::{
+        modes::{Multi, Single},
+        ring::Ring,
+    };
+
+    /// The receiving half of a bounded multi-producer single-consumer channel.
+    pub type Receiver<const N: usize, T> = crate::consumer::Receiver<N, T, Multi, Single>;
+
+    /// The sending half of a bounded multi-producer single-consumer channel.
+    pub type Sender<const N: usize, T> = crate::producer::Sender<N, T, Multi, Single>;
+
+    /// An iterator over the values read by a [`Receiver`].
+    pub type RecvValues<const N: usize, T> =
+        crate::ring::recv_values::RecvValues<N, T, Multi, Single>;
+
+    /// Create a multi-producer single-consumer channel with space for `N` values of `T`.
+    #[must_use]
+    #[inline]
+    pub fn bounded<const N: usize, T>() -> (Sender<N, T>, Receiver<N, T>) {
+        Ring::new()
+    }
 }
 
-/// Create a single-producer/multi-consumer channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn spmc<const N: usize, T>() -> (Sp<N, T, Multi>, Mc<N, T, Single>) {
-    Ring::new()
-}
+/// A multi-producer multi-consumer channel.
+pub mod mpmc {
+    use crate::{modes::Multi, ring::Ring};
 
-/// Create a single-producer/single-consumer channel with space for `N` values of `T`.
-#[must_use]
-#[inline]
-pub fn spsc<const N: usize, T>() -> (Sp<N, T, Single>, Sc<N, T, Single>) {
-    Ring::new()
-}
+    /// The receiving half of a bounded multi-producer multi-consumer channel.
+    pub type Receiver<const N: usize, T> = crate::consumer::Receiver<N, T, Multi, Multi>;
 
-/// Create a custom channel with space for `N` values of `T`.
-///
-/// # Type parameters
-/// - N: the size of the channel,
-/// - T: the type that will be sent over the channel,
-/// - P: the sync mode of the producer head and tail (see [`Mode`]),
-/// - C: the sync mode of the consumer head and tail (see [`Mode`]),
-#[must_use]
-#[inline]
-pub fn bounded<const N: usize, T, P, C>() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>)
-where
-    P: Mode,
-    C: Mode,
-{
-    Ring::new()
+    /// The sending half of a bounded multi-producer multi-consumer channel.
+    pub type Sender<const N: usize, T> = crate::producer::Sender<N, T, Multi, Multi>;
+
+    /// An iterator over the values read by a [`Receiver`].
+    pub type RecvValues<const N: usize, T> =
+        crate::ring::recv_values::RecvValues<N, T, Multi, Multi>;
+
+    /// Create a multi-producer multi-consumer channel with space for `N` values of `T`.
+    #[must_use]
+    #[inline]
+    pub fn bounded<const N: usize, T>() -> (Sender<N, T>, Receiver<N, T>) {
+        Ring::new()
+    }
 }

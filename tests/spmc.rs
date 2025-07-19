@@ -23,7 +23,7 @@ where
 #[test]
 pub fn test_spmc_try_send_recv_sequential() {
     model(|| {
-        let (sender, receiver) = ringbeam::spmc::<64, u8>();
+        let (sender, receiver) = ringbeam::spmc::bounded::<64, u8>();
         sender.try_send(10).unwrap();
         let res = receiver.try_recv().unwrap();
         assert_eq!(res, 10);
@@ -33,7 +33,7 @@ pub fn test_spmc_try_send_recv_sequential() {
 #[test]
 pub fn test_spmc_try_send_recv_interleaved_1() {
     model(|| {
-        let (sender, receiver) = ringbeam::spmc::<64, u8>();
+        let (sender, receiver) = ringbeam::spmc::bounded::<64, u8>();
         let handle = thread::spawn(move || {
             for i in 0..100 {
                 loop {
@@ -68,7 +68,7 @@ pub fn test_spmc_try_send_recv_interleaved_1() {
 pub fn test_spmc_try_send_recv_interleaved_2() {
     model(|| {
         let (send_result, recv_result) = std::sync::mpsc::channel::<usize>();
-        let (sender, receiver) = ringbeam::spmc::<64, u8>();
+        let (sender, receiver) = ringbeam::spmc::bounded::<64, u8>();
         let send_result_1 = send_result.clone();
         let receiver_1 = receiver.clone();
         let handle = thread::spawn(move || {

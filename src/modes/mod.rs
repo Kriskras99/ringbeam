@@ -20,14 +20,36 @@ pub use multi::Multi;
 pub use rts::RelaxedTailSync;
 pub use single::Single;
 
-#[expect(private_bounds, reason = "We don't want to expose these functions")]
+/// The synchronisation mode of a [`Sender`](crate::custom::Sender) or [`Receiver`](crate::custom::Receiver).
+///
+/// The channel contains a large ring of slots where the values are put by the `Receiver` and read
+/// by the `Sender`. Both the `Sender` and `Receiver` halfs of the channel keep track of their progress
+/// using two indexes: the head and the tail. The `Sender` is currently writing values between its
+/// tail and head, and the `Receiver` is currently reading the values between its tail and head.
+/// Between the `Sender` tail and the `Receiver` head are values that have not been written yet.
+/// Between the `Receiver` tail and the `Sender` head are empty slots.
+///
+/// As the `Sender` and `Receiver` can be on different threads and depending on the mode there can
+/// be multiple of each on different threads. Therefore, the 'headtails' must be accessed in a
+/// synchronised way otherwise data races and undefined behaviour start occurring.
+///
+/// The different modes allows the user to choose the synchronisation method that is best for their
+/// specific situation.
+///
+/// There are currently four modes:
+/// - [`Single`]: Only allows singlethreaded access to a 'headtail'.
+/// - [`Multi`]: Allows multithreaded access to a 'headtail'. Every thread spins on the head to acquire
+///   slots. After they're done they spin on the tail to update past their slots.
+/// - [`HeadTailSync`]: Allows multithreaded access but only one thread is allowed to update the head.
+///   Only after it's done with the slots and updated the tail the next thread can update the head.
+/// - [`RelaxedTailSync`]: Similar to `Multi`, but only the last thread updates the tail.
 pub trait Mode: ModeInner {}
 impl<T: ModeInner> Mode for T {}
 
 /// Represents the head and tail.
 ///
 /// Can be implemented in various ways, see [`Mode`].
-pub(crate) trait ModeInner: Default {
+pub trait ModeInner: Default {
     /// Move the head.
     ///
     /// # Generics
@@ -76,7 +98,7 @@ pub(crate) trait ModeInner: Default {
 ///
 /// A claim **must** be fully consumed before being returned.
 #[must_use]
-pub(crate) struct Claim {
+pub struct Claim {
     /// The amount of entries from `start` which are part of the claim.
     entries: NonZeroU32,
     /// The place in the ring where the claim starts.
@@ -84,10 +106,6 @@ pub(crate) struct Claim {
 }
 
 impl Debug for Claim {
-    #[expect(
-        clippy::missing_inline_in_public_items,
-        reason = "It's the Debug trait"
-    )]
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!(
             "Claim {{ entries: {}, start: {}}}",

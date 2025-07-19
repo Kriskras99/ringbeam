@@ -23,7 +23,7 @@ where
 #[test]
 pub fn test_mpsc_try_send_recv_sequential() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpsc::<64, u8>();
+        let (sender, receiver) = ringbeam::mpsc::bounded::<64, u8>();
         sender.try_send(10).unwrap();
         let res = receiver.try_recv().unwrap();
         assert_eq!(res, 10);
@@ -33,7 +33,7 @@ pub fn test_mpsc_try_send_recv_sequential() {
 #[test]
 pub fn test_mpsc_try_send_recv_interleaved_1() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpsc::<64, u8>();
+        let (sender, receiver) = ringbeam::mpsc::bounded::<64, u8>();
         let handle = thread::spawn(move || {
             for i in 0..100 {
                 loop {
@@ -67,7 +67,7 @@ pub fn test_mpsc_try_send_recv_interleaved_1() {
 #[test]
 pub fn test_mpsc_try_send_recv_interleaved_2() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpsc::<64, u8>();
+        let (sender, receiver) = ringbeam::mpsc::bounded::<64, u8>();
         let handle = thread::spawn(move || {
             let mut i = 0;
             let mut j = 1;

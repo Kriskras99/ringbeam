@@ -12,6 +12,8 @@ mod thread {
 }
 #[cfg(feature = "loom")]
 use loom::model::model;
+use ringbeam::custom::modes::RelaxedTailSync;
+
 #[cfg(not(feature = "loom"))]
 fn model<F>(f: F)
 where
@@ -23,7 +25,8 @@ where
 #[test]
 pub fn test_mpmc_rts_try_send_recv_sequential() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpmc_rts::<64, u8>();
+        let (sender, receiver) =
+            ringbeam::custom::bounded::<64, u8, RelaxedTailSync, RelaxedTailSync>();
         sender.try_send(10).unwrap();
         let res = receiver.try_recv().unwrap();
         assert_eq!(res, 10);
@@ -33,7 +36,8 @@ pub fn test_mpmc_rts_try_send_recv_sequential() {
 #[test]
 pub fn test_mpmc_rts_try_send_recv_interleaved_1() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpmc_rts::<64, u8>();
+        let (sender, receiver) =
+            ringbeam::custom::bounded::<64, u8, RelaxedTailSync, RelaxedTailSync>();
         let handle = thread::spawn(move || {
             for i in 0..100 {
                 loop {
@@ -67,7 +71,8 @@ pub fn test_mpmc_rts_try_send_recv_interleaved_1() {
 #[test]
 pub fn test_mpmc_rts_try_send_recv_interleaved_2() {
     model(|| {
-        let (sender, receiver) = ringbeam::mpmc_rts::<64, u8>();
+        let (sender, receiver) =
+            ringbeam::custom::bounded::<64, u8, RelaxedTailSync, RelaxedTailSync>();
         let handle = thread::spawn(move || {
             let mut i = 0;
             let mut j = 1;

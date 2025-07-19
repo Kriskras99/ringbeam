@@ -248,7 +248,10 @@ where
     /// also return [`Error::NotEnoughItemsAndClosed`] where retrying can be successful with `EXACT: false`.
     ///
     /// If there are `u16::MAX - 1` consumers it can also return [`Error::TooManyConsumers`].
-    pub fn try_dequeue<const EXACT: bool>(&self, n: usize) -> Result<RecvValues<N, T, P, C>, Error> {
+    pub fn try_dequeue<const EXACT: bool>(
+        &self,
+        n: usize,
+    ) -> Result<RecvValues<N, T, P, C>, Error> {
         let Some(len) = NonZeroU32::new(n as u32) else {
             cold_path();
             return Ok(RecvValues::new_empty());
@@ -284,7 +287,7 @@ where
     ///
     /// After calling this function every function will return [`Error::Poisoned`] or panic.
     ///
-    /// This **should** be called if a [`Consumer`], [`Producer`], or [`RecvValues`] panics while holding
+    /// This **should** be called if a [`Receiver`], [`Sender`], or [`RecvValues`] panics while holding
     /// a [`Claim`]. Otherwise, the ring will be stuck.
     #[inline]
     pub fn poison(&self) {

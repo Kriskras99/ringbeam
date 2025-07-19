@@ -8,6 +8,13 @@ use crate::{
 };
 use std::thread::panicking;
 
+/// The receiving-half of the channel.
+///
+/// # Generics
+/// - `N`: the size of the channel.
+/// - `T`: the type being sent over the channel.
+/// - `P`: the synchronisation mode of the sender, see [`Mode`].
+/// - `C`: the synchronisation mode of the receiver, see [`Mode`].
 pub struct Receiver<const N: usize, T, P, C>
 where
     P: Mode,

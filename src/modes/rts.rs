@@ -32,6 +32,8 @@ impl Default for RelaxedTailSync {
 }
 
 impl RelaxedTailSync {
+    /// Create a new headtail with a maximum distance between the head and tail of `htd_max`.
+    // TODO: Actually be able to configure this when creating the ring
     #[must_use]
     #[inline]
     pub fn new(htd_max: NonZeroU32) -> Self {

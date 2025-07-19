@@ -99,7 +99,8 @@ impl ModeInner for HeadTailSync {
 
             let other_tail = other.load_tail(Relaxed);
 
-            let available = calculate_available::<N, IS_PROD, EXACT>(old.head, other_tail, expected)?;
+            let available =
+                calculate_available::<N, IS_PROD, EXACT>(old.head, other_tail, expected)?;
 
             let new = HeadTail {
                 head: old.head.wrapping_add(available.get()) & (N as u32 - 1),
