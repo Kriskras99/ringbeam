@@ -12,8 +12,6 @@ mod producer;
 mod ring;
 mod std;
 
-use thiserror::Error;
-
 // TODO: Use consistent naming for producer/consumer or sender/receiver throughout.
 // TODO: Use consistent naming for enqueue/dequeue or send/recv throughout.
 // TODO: Implement peek for single/multi_hts
@@ -23,39 +21,60 @@ use thiserror::Error;
 // TODO: Document the inner workings of the various modes in their module documentation.
 
 /// All errors that can be returned when accessing the channel.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// The channel is closed.
-    #[error("Channel is closed")]
     Closed,
     /// The channel is empty.
-    #[error("Channel is empty")]
     Empty,
     /// The channel is full.
-    #[error("Channel is full")]
     Full,
     /// The caller requested exactly `n` items, but there were not enough items in the channel.
-    #[error("Channel had a few items, but not as many as requested")]
     NotEnoughItems,
     /// The caller requested exactly `n` items, but the channel is closed and only has fewer items left.
-    #[error("Channel is closed but still had a few items, but not as many as requested")]
     NotEnoughItemsAndClosed,
     /// The caller wants to put exactly `n` items in the channel, but there is not enough room.
-    #[error("Channel had room, but not enough room for all the items")]
     NotEnoughSpace,
     /// A panic occurred while holding access to the channel, so the channel is in an undefined state.
-    #[error("Channel is poisoned")]
     Poisoned,
     /// There are too many consumers, a new one can't be added.
     ///
     /// The current limit is `u16::MAX - 1`
-    #[error("Maximum amount of consumers in channel has been reached")]
     TooManyConsumers,
     /// There are too many producers, a new one can't be added.
     ///
     /// The current limit is `u16::MAX - 1`
-    #[error("Maximum amount of producers in channel has been reached")]
     TooManyProducers,
+}
+
+impl core::error::Error for Error {}
+
+impl core::fmt::Display for Error {
+    #[expect(
+        clippy::missing_inline_in_public_items,
+        reason = "Error formatting is not performance sensitive"
+    )]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("Channel is closed"),
+            Self::Empty => f.write_str("Channel is empty"),
+            Self::Full => f.write_str("Channel is full"),
+            Self::NotEnoughItems => f.write_str("Channel had items, but not as many as requested"),
+            Self::NotEnoughItemsAndClosed => {
+                f.write_str("Channel is closed but still had items, but not as many as requested")
+            }
+            Self::NotEnoughSpace => {
+                f.write_str("Channel had room, but not enough room for all the items")
+            }
+            Self::Poisoned => f.write_str("Channel is poisoned"),
+            Self::TooManyConsumers => {
+                f.write_str("Maximum amount of consumers in channel has been reached")
+            }
+            Self::TooManyProducers => {
+                f.write_str("Maximum amount of producers in channel has been reached")
+            }
+        }
+    }
 }
 
 /// A channel with a custom configuration.
