@@ -2,8 +2,8 @@
 #![cfg_attr(feature = "trusted_len", feature(trusted_len))]
 #![cfg_attr(feature = "cold_path", feature(cold_path))]
 
-#[cfg(all(feature = "loom", feature = "shuttle"))]
-compile_error!("Features 'loom' and 'shuttle' cannot be enabled at the same time");
+#[cfg(all(feature = "_loom", feature = "_shuttle"))]
+compile_error!("Features '_loom' and '_shuttle' cannot be enabled at the same time");
 
 mod cache_padded;
 mod consumer;

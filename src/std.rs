@@ -15,22 +15,22 @@
 pub mod alloc {
     extern crate alloc;
     pub use alloc::alloc::handle_alloc_error;
-    #[cfg(not(feature = "loom"))]
+    #[cfg(not(feature = "_loom"))]
     pub use alloc::alloc::{alloc, dealloc};
     pub use core::alloc::Layout;
-    #[cfg(feature = "loom")]
+    #[cfg(feature = "_loom")]
     pub use loom::alloc::{alloc, dealloc};
 }
 
 /// Shareable mutable containers.
 pub mod cell {
-    #[cfg(feature = "loom")]
+    #[cfg(feature = "_loom")]
     pub use loom::cell::UnsafeCell;
-    #[cfg(not(feature = "loom"))]
+    #[cfg(not(feature = "_loom"))]
     pub use unsafe_cell_wrapper::UnsafeCell;
 
     /// A custom [`UnsafeCell`] that mimics `loom`s API.
-    #[cfg(not(feature = "loom"))]
+    #[cfg(not(feature = "_loom"))]
     mod unsafe_cell_wrapper {
         #[derive(Debug)]
         #[repr(transparent)]
@@ -57,11 +57,11 @@ pub mod cell {
 ///
 /// Hints may be compile time or runtime.
 pub mod hint {
-    #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+    #[cfg(not(any(feature = "_loom", feature = "_shuttle")))]
     pub use core::hint::spin_loop;
-    #[cfg(feature = "loom")]
+    #[cfg(feature = "_loom")]
     pub use loom::hint::spin_loop;
-    #[cfg(feature = "shuttle")]
+    #[cfg(feature = "_shuttle")]
     pub use shuttle::hint::spin_loop;
 
     #[cfg(not(feature = "cold_path"))]
@@ -73,11 +73,11 @@ pub mod hint {
 
 /// Basic functions for dealing with memory.
 pub mod mem {
-    #[cfg(feature = "safe_maybeuninit")]
+    #[cfg(feature = "_safe_maybeuninit")]
     pub use safe_maybe_uninit::MaybeUninit;
-    #[cfg(not(feature = "safe_maybeuninit"))]
+    #[cfg(not(feature = "_safe_maybeuninit"))]
     pub use unsafe_maybe_uninit::MaybeUninit;
-    #[cfg(feature = "safe_maybeuninit")]
+    #[cfg(feature = "_safe_maybeuninit")]
     /// An implementation for a custom [`core::mem::MaybeUninit`] that tracks the internal state.
     ///
     /// This module is not compatible with `core` and `alloc`.
@@ -156,7 +156,7 @@ pub mod mem {
         }
     }
 
-    #[cfg(not(feature = "safe_maybeuninit"))]
+    #[cfg(not(feature = "_safe_maybeuninit"))]
     mod unsafe_maybe_uninit {
         /// See [`MaybeUninit`](core::mem::MaybeUninit).
         #[repr(transparent)]
@@ -206,11 +206,11 @@ pub mod mem {
 pub mod sync {
     /// Atomic types.
     pub mod atomic {
-        #[cfg(not(any(feature = "loom", feature = "shuttle")))]
+        #[cfg(not(any(feature = "_loom", feature = "_shuttle")))]
         pub use core::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
-        #[cfg(feature = "loom")]
+        #[cfg(feature = "_loom")]
         pub use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
-        #[cfg(feature = "shuttle")]
+        #[cfg(feature = "_shuttle")]
         pub use shuttle::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
     }
 }

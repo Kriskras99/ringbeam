@@ -10,6 +10,10 @@ repository = "https://github.com/kriskras99/ringbeam"
 categories = ["algorithms", "concurrency", "data-structures"]
 keywords = ["channel", "dpdk", "ringbuffer"]
 
+[package.metadata.docs.rs]
+# Documentation is not different on other targets
+targets = []
+
 [dependencies]
 loom = { version = "0.7.1", default-features = false, features = ["checkpoint"], optional = true }
 shuttle = { version = "0.8.1", default-features = false, features = [], optional = true}
@@ -17,11 +21,16 @@ shuttle = { version = "0.8.1", default-features = false, features = [], optional
 [dev-dependencies]
 
 [features]
+# Emit branch hints using `std::hint::cold_path`, requires nightly.
 cold_path = []
+# Implement `std::iter::TrustedLen` for `RecvValues`, requires nightly.
 trusted_len = []
-loom = ["dep:loom", "safe_maybeuninit"]
-shuttle = ["dep:shuttle", "safe_maybeuninit"]
-safe_maybeuninit = []
+# Internal feature. Test the implementation using `_loom`, conflicts with `_shuttle`.
+_loom = ["dep:loom", "_safe_maybeuninit"]
+# Internal feature. Test the implementation using `_shuttle`, conflicts with `_loom`.
+_shuttle = ["dep:shuttle", "_safe_maybeuninit"]
+# Internal feature. Use a safe variant of MaybeUninit to detect overwriting/uninitialized reads in tests.
+_safe_maybeuninit = []
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

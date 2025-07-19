@@ -65,7 +65,11 @@ where
                 "Requested capacity was not a power of two"
             );
             // Loom's UnsafeCell type is larger, because it tracks (mutable) references.
-            #[cfg(not(any(feature = "loom", feature = "shuttle", feature = "safe_maybeuninit")))]
+            #[cfg(not(any(
+                feature = "_loom",
+                feature = "_shuttle",
+                feature = "_safe_maybeuninit"
+            )))]
             assert!(
                 size_of::<T>() == size_of::<UnsafeCell<MaybeUninit<T>>>(),
                 "Missed optimisation"

@@ -2,17 +2,17 @@
 
 use ringbeam::Error;
 
-#[cfg(feature = "loom")]
+#[cfg(feature = "_loom")]
 mod thread {
     pub use loom::thread::{spawn, yield_now};
 }
-#[cfg(not(feature = "loom"))]
+#[cfg(not(feature = "_loom"))]
 mod thread {
     pub use std::thread::{spawn, yield_now};
 }
-#[cfg(feature = "loom")]
+#[cfg(feature = "_loom")]
 use loom::model::model;
-#[cfg(not(feature = "loom"))]
+#[cfg(not(feature = "_loom"))]
 fn model<F>(f: F)
 where
     F: Fn() + Send + Sync + 'static,
