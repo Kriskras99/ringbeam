@@ -37,7 +37,7 @@ where
     /// `ring` must point to an initialized and aligned [`Ring`].
     ///
     /// # Errors
-    /// Will return [`Error::Closed`] or [`Error::Poisoned`], if the ring is in that state. It will
+    /// Can return [`Error::Closed`] or [`Error::Poisoned`] when the ring is in that state. It will
     /// return [`Error::TooManyConsumers`] if there are already `u16::MAX - 1` consumers.
     ///
     /// Note: A [`RecvValues`] instance also counts as a consumer while [`RecvValues::next`] still

@@ -37,7 +37,7 @@ where
     /// `ring` must point to an initialized and aligned [`Ring`].
     ///
     /// # Errors
-    /// Will return [`Error::Closed`] or [`Error::Poisoned`], if the ring is in that state. It will
+    /// Can return [`Error::Closed`] or [`Error::Poisoned`] when the ring is in that state. It can
     /// return [`Error::TooManyProducers`] if there are already `u16::MAX - 1` producers.
     pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>) -> Result<Self, Error> {
         // SAFETY: caller has assured that `ring` is initialized and aligned.
@@ -99,7 +99,9 @@ where
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
     /// one of those states. The last one indicates that retrying can be successful. It can also
     /// return [`Error::NotEnoughSpace`], which can also be successful on a retry.
-    // TODO: The Iterator must be TrustedLen, but that's unstable
+    ///
+    /// # Panics
+    /// Can panic if the [`ExactSizeIterator`] implementation of `I` is wrong.
     #[inline]
     pub fn try_send_bulk<I>(&self, values: &mut I) -> Result<usize, Error>
     where
@@ -124,7 +126,9 @@ where
     /// # Errors
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
     /// one of those states. The last one indicates that retrying can be successful.
-    // TODO: The Iterator must be TrustedLen, but that's unstable
+    ///
+    /// # Panics
+    /// Can panic if the [`ExactSizeIterator`] implementation of `I` is wrong.
     #[inline]
     pub fn try_send_burst<I>(&self, values: &mut I) -> Result<usize, Error>
     where

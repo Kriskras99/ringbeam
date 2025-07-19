@@ -132,7 +132,7 @@ impl AtomicActive {
     /// Returns [`Error::Poisoned`] if the ring is poisoned.
     ///
     /// # Panics
-    /// Will panic if producers is already 0.
+    /// Can panic if producers is already 0.
     pub fn unregister_producer(&self) -> Result<Last, Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
@@ -175,7 +175,7 @@ impl AtomicActive {
     /// Returns [`Error::Poisoned`] if the ring is poisoned.
     ///
     /// # Panics
-    /// Will panic if consumers is already 0.
+    /// Can panic if consumers is already 0.
     pub fn unregister_consumer(&self) -> Result<Last, Error> {
         // TODO: This ordering is most likely too strict
         self.fetch_update(SeqCst, SeqCst, |mut a| {
@@ -215,7 +215,7 @@ impl AtomicActive {
     /// The amount of active producers.
     ///
     /// # Errors
-    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    /// Can return [`Error::Poisoned`] if the ring is poisoned.
     #[inline]
     pub fn producers(&self) -> Result<u16, Error> {
         // TODO: This ordering is most likely too strict
@@ -230,7 +230,7 @@ impl AtomicActive {
     /// The amount of active consumers.
     ///
     /// # Errors
-    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    /// Can return [`Error::Poisoned`] if the ring is poisoned.
     #[inline]
     pub fn consumers(&self) -> Result<u16, Error> {
         // TODO: This ordering is most likely too strict
@@ -284,7 +284,7 @@ impl Active {
     /// Have all producers and consumers shutdown.
     ///
     /// # Errors
-    /// Will return [`Error::Poisoned`] if the ring is poisoned.
+    /// Can return [`Error::Poisoned`] if the ring is poisoned.
     #[inline]
     pub const fn is_empty(&self) -> Result<bool, Error> {
         if self.consumers == 0xFFFF && self.producers == 0xFFFF {

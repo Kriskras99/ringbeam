@@ -126,8 +126,7 @@ where
     /// The caller *must* be the last with access to the ring and already unregistered (i.e. `self.active == 0`).
     ///
     /// # Panics
-    /// Will panic if the ring still has active producers and/or consumers. It will also panic if
-    /// the ring is poisoned.
+    /// Can panic if the ring still has active producers and/or consumers or if the ring is poisoned.
     ///
     pub unsafe fn cleanup(ring: *const Self) {
         // SAFETY: Ring is still valid before we call dealloc
@@ -194,6 +193,9 @@ where
     /// Can return [`Error::Closed`], [`Error::Poisoned`], or [`Error::Empty`] if the ring is in
     /// one of those states. The last one indicates that retrying can be successful. If `EXACT` it
     /// can also return [`Error::NotEnoughSpace`], which can also be successful on a retry.
+    ///
+    /// # Panics
+    /// Can panic if the [`ExactSizeIterator`] implementation of `I` is wrong.
     pub fn try_enqueue<const EXACT: bool, I>(&self, values: &mut I) -> Result<usize, Error>
     where
         I: Iterator<Item = T> + ExactSizeIterator,
@@ -221,12 +223,21 @@ where
             })?;
 
         let data = self.data();
+        let mut total = 0;
         for (i, value) in values.take(claim.entries() as usize).enumerate() {
             let offset = i.wrapping_add(claim.start() as usize) & (N - 1);
             // SAFETY: Our Claim gives exclusive access to this index
             unsafe {
                 data[offset].with_mut(|p| (*p).write(value));
             }
+            total = i;
+        }
+
+        // The ExactSizeIterator implementation **must** be valid
+        if total + 1 != claim.entries() as usize {
+            cold_path();
+            self.poison();
+            panic!("Iterator yielded less values than .len() promised");
         }
 
         let n = claim.entries() as usize;
@@ -291,6 +302,7 @@ where
     /// a [`Claim`]. Otherwise, the ring will be stuck.
     #[inline]
     pub fn poison(&self) {
+        cold_path();
         self.active.poison();
         self.cons_headtail.mark_finished();
         self.prod_headtail.mark_finished();

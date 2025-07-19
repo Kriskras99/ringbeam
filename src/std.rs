@@ -102,7 +102,7 @@ pub mod mem {
             /// Extract T from the container.
             ///
             /// # Panics
-            /// Will panic if T is not initialized or another thread is currently writing to it.
+            /// Can panic if T is not initialized or another thread is currently writing to it.
             ///
             /// # Safety
             /// It does not have any safety requirements, the function signature just matches
@@ -122,7 +122,7 @@ pub mod mem {
             /// Write a valid value of T.
             ///
             /// # Panics
-            /// Will panic if another thread is currently reading it.
+            /// Can panic if another thread is currently reading it.
             pub fn write(&mut self, value: T) {
                 let mut guard = self
                     .mutex
@@ -136,7 +136,7 @@ pub mod mem {
             /// Drop T from the container.
             ///
             /// # Panics
-            /// Will panic if T is not initialized or another thread is currently writing to it.
+            /// Can panic if T is not initialized or another thread is currently writing to it.
             ///
             /// # Safety
             /// It does not have any safety requirements, the function signature just matches

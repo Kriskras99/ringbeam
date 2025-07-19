@@ -40,7 +40,7 @@ where
     /// is currently registered with the ring.
     ///
     /// # Errors
-    /// Will return [`Error::Poisoned`] if the ring is poisoned and [`Error::TooManyConsumers`] if
+    /// Can return [`Error::Poisoned`] if the ring is poisoned and [`Error::TooManyConsumers`] if
     /// there are already `u16::MAX - 1` consumers.
     #[inline]
     pub(crate) unsafe fn new(ring: *const Ring<N, T, P, C>, claim: Claim) -> Result<Self, Error> {
