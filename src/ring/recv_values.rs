@@ -85,8 +85,9 @@ where
             // SAFETY: RecvValues is registered as a consumer, so ring is a valid reference
             //         The Claim guarantees we have exclusive access to this index and that
             //         there is a valid, initialized item at the index.
-            let value =
-                unsafe { (*ring).data()[self.offset as usize].with(|p| p.read().assume_init()) };
+            let value = unsafe {
+                (*ring).data()[self.offset as usize].with_mut(|p| (*p).assume_init_take())
+            };
 
             self.consumed += 1;
             self.offset = self.offset.wrapping_add(1) & (N as u32 - 1);
@@ -157,7 +158,7 @@ where
                 //         The Claim guarantees we have exclusive access to this index and that
                 //         there is a valid, intialized item at the index.
                 unsafe {
-                    (*ring).data()[self.offset as usize].with(|p| p.read().assume_init_drop());
+                    (*ring).data()[self.offset as usize].with_mut(|p| (*p).assume_init_drop());
                 };
                 self.consumed += 1;
                 self.offset = self.offset.wrapping_add(1) & (N as u32 - 1);

@@ -228,7 +228,7 @@ where
             let offset = i.wrapping_add(claim.start() as usize) & (N - 1);
             // SAFETY: Our Claim gives exclusive access to this index
             unsafe {
-                data[offset].with_mut(|p| (&mut *p).write(value));
+                data[offset].with_mut(|p| (*p).write(value));
             }
         }
 

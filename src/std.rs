@@ -45,11 +45,6 @@ pub mod cell {
                 Self(core::cell::UnsafeCell::new(data))
             }
 
-            /// Get a const pointer to the wrapped value.
-            pub fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
-                f(self.0.get())
-            }
-
             /// Get a mutable pointer to the wrapped value.
             pub fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
                 f(self.0.get())
@@ -78,25 +73,22 @@ pub mod hint {
 
 /// Basic functions for dealing with memory.
 pub mod mem {
-    #[cfg(not(feature = "safe_maybeuninit"))]
-    pub use core::mem::MaybeUninit;
     #[cfg(feature = "safe_maybeuninit")]
-    pub use maybe_uninit_wrapper::MaybeUninit;
+    pub use safe_maybe_uninit::MaybeUninit;
+    #[cfg(not(feature = "safe_maybeuninit"))]
+    pub use unsafe_maybe_uninit::MaybeUninit;
     #[cfg(feature = "safe_maybeuninit")]
     /// An implementation for a custom [`core::mem::MaybeUninit`] that tracks the internal state.
     ///
     /// This module is not compatible with `core` and `alloc`.
-    mod maybe_uninit_wrapper {
-        use std::sync::RwLock;
+    mod safe_maybe_uninit {
+        use std::sync::Mutex;
 
         /// A `MaybeUninit` that tracks if it has been initialized.
         ///
         /// This version does *not* have the same size as T.
         pub struct MaybeUninit<T> {
-            rw: RwLock<()>,
-            inner: core::mem::MaybeUninit<T>,
-            // TODO: This doesn't work properly, need a `take` function
-            initialized: bool,
+            mutex: Mutex<(std::mem::MaybeUninit<T>, bool)>,
         }
 
         impl<T> MaybeUninit<T> {
@@ -104,9 +96,7 @@ pub mod mem {
             #[must_use]
             pub const fn uninit() -> Self {
                 Self {
-                    rw: RwLock::new(()),
-                    inner: std::mem::MaybeUninit::uninit(),
-                    initialized: false,
+                    mutex: Mutex::new((std::mem::MaybeUninit::uninit(), false)),
                 }
             }
             /// Extract T from the container.
@@ -117,11 +107,16 @@ pub mod mem {
             /// # Safety
             /// It does not have any safety requirements, the function signature just matches
             /// [`core::mem::MaybeUninit`].
-            pub unsafe fn assume_init(mut self) -> T {
-                let _guard = self.rw.try_read().unwrap();
-                assert!(self.initialized, "Container is not initialized!");
-                self.initialized = false;
-                unsafe { self.inner.assume_init() }
+            pub unsafe fn assume_init_take(&mut self) -> T {
+                let mut guard = self
+                    .mutex
+                    .try_lock()
+                    .expect("There is a concurrent access!");
+                assert!(guard.1, "Container is not initialized!");
+                guard.1 = false;
+                let taken = std::mem::replace(&mut guard.0, std::mem::MaybeUninit::uninit());
+                // SAFETY: the assert checked that it's initialized
+                unsafe { taken.assume_init() }
             }
 
             /// Write a valid value of T.
@@ -129,12 +124,13 @@ pub mod mem {
             /// # Panics
             /// Will panic if another thread is currently reading it.
             pub fn write(&mut self, value: T) {
-                let _guard = self.rw.try_write().unwrap();
-                self.inner.write(value);
-                if self.initialized {
-                    eprintln!("Warning! Was already initialized!");
-                }
-                self.initialized = true;
+                let mut guard = self
+                    .mutex
+                    .try_lock()
+                    .expect("There is a concurrent access!");
+                assert!(!guard.1, "Container already initialized!");
+                guard.1 = true;
+                guard.0.write(value);
             }
 
             /// Drop T from the container.
@@ -146,9 +142,58 @@ pub mod mem {
             /// It does not have any safety requirements, the function signature just matches
             /// [`core::mem::MaybeUninit`].
             pub unsafe fn assume_init_drop(&mut self) {
-                let _guard = self.rw.try_write().unwrap();
-                assert!(self.initialized, "Container is not initialized!");
-                self.initialized = false;
+                let mut guard = self
+                    .mutex
+                    .try_lock()
+                    .expect("There is a concurrent access!");
+                assert!(guard.1, "Container is not initialized!");
+                guard.1 = false;
+                // SAFETY: The assert assures that the value is initialized
+                unsafe {
+                    guard.0.assume_init_drop();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "safe_maybeuninit"))]
+    mod unsafe_maybe_uninit {
+        /// See [`MaybeUninit`](core::mem::MaybeUninit).
+        #[repr(transparent)]
+        pub struct MaybeUninit<T> {
+            /// The `MaybeUninit` we're wrapping
+            inner: core::mem::MaybeUninit<T>,
+        }
+
+        impl<T> MaybeUninit<T> {
+            /// Create a new uninitialized T.
+            #[must_use]
+            pub const fn uninit() -> Self {
+                Self {
+                    inner: core::mem::MaybeUninit::uninit(),
+                }
+            }
+            /// Take T from the container, replacing it with an uninitialized value.
+            ///
+            /// # Safety
+            /// See [`MaybeUninit::assume_init`](core::mem::MaybeUninit::assume_init)
+            pub const unsafe fn assume_init_take(&mut self) -> T {
+                let taken = core::mem::replace(&mut self.inner, core::mem::MaybeUninit::uninit());
+                // SAFETY: caller is responsible for this
+                unsafe { taken.assume_init() }
+            }
+
+            /// Write a valid value of T.
+            pub const fn write(&mut self, value: T) {
+                self.inner.write(value);
+            }
+
+            /// Drop T from the container.
+            ///
+            /// # Safety
+            /// See [`MaybeUninit::assume_init_drop`](core::mem::MaybeUninit::assume_init_drop)
+            pub unsafe fn assume_init_drop(&mut self) {
+                // SAFETY: Guaranteed by caller
                 unsafe {
                     self.inner.assume_init_drop();
                 }
