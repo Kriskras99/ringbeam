@@ -5,7 +5,7 @@
 //! becomes messy, so we mimic the standard library here for the types that can be replaced.
 //!
 //! It's also used to conditionally use the `cold_path` hint which is currently unstable, so if the
-//! feature `likely` is not enabled it's just an empty function.
+//! feature `cold_path` is not enabled it's just an empty function.
 //!
 //! Finally, there is an alternative `MaybeUninit` type which does track if the inner type is
 //! initialized. This allows tests to catch more problems and is not intended to be enabled by
@@ -64,10 +64,10 @@ pub mod hint {
     #[cfg(feature = "shuttle")]
     pub use shuttle::hint::spin_loop;
 
-    #[cfg(not(feature = "likely"))]
-    /// Does nothing as the `likely` feature is not enabled.
+    #[cfg(not(feature = "cold_path"))]
+    /// Does nothing as the `cold_path` feature is not enabled.
     pub const fn cold_path() {}
-    #[cfg(feature = "likely")]
+    #[cfg(feature = "cold_path")]
     pub use core::hint::cold_path;
 }
 

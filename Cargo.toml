@@ -17,7 +17,7 @@ shuttle = { version = "0.8.1", default-features = false, features = [], optional
 [dev-dependencies]
 
 [features]
-likely = []
+cold_path = []
 trusted_len = []
 loom = ["dep:loom", "safe_maybeuninit"]
 shuttle = ["dep:shuttle", "safe_maybeuninit"]
