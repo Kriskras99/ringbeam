@@ -1,4 +1,4 @@
-#![allow(clippy::missing_panics_doc, reason = "It's a test")]
+#![allow(clippy::missing_panics_doc, missing_docs, reason = "It's a test")]
 
 use ringbeam::Error;
 
