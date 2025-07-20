@@ -103,6 +103,26 @@ pub mod custom {
     {
         Ring::new()
     }
+
+    /// Create a custom channel with space for `N` values of `T`.
+    ///
+    /// # Type parameters
+    /// - N: the size of the channel,
+    /// - T: the type that will be sent over the channel,
+    /// - P: the sync mode of the producer head and tail (see [`Mode`]),
+    /// - C: the sync mode of the consumer head and tail (see [`Mode`]),
+    #[must_use]
+    #[inline]
+    pub fn bounded_with_config<const N: usize, T, P, C>(
+        producer_settings: P::Settings,
+        consumer_settings: C::Settings,
+    ) -> (Sender<N, T, P, C>, Receiver<N, T, P, C>)
+    where
+        P: Mode,
+        C: Mode,
+    {
+        Ring::new_with_config(producer_settings, consumer_settings)
+    }
 }
 
 /// A single-producer single-consumer channel.

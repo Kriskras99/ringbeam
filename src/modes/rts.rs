@@ -27,7 +27,7 @@ pub struct RelaxedTailSync {
 impl Default for RelaxedTailSync {
     #[inline]
     fn default() -> Self {
-        Self::new(NonZeroU32::new(5).unwrap_or_else(|| unreachable!()))
+        Self::new(NonZeroU32::MAX)
     }
 }
 
@@ -103,6 +103,29 @@ impl AtomicPosCnt {
             .compare_exchange_weak(current.into(), new.into(), success, failure)
             .map(PosCnt::from)
             .map_err(PosCnt::from)
+    }
+}
+
+/// The maximum distance between the head and tail of a 'headtail'.
+///
+/// This defaults to `u32::MAX`.
+pub struct MaxHeadTailDistance(NonZeroU32);
+impl Default for MaxHeadTailDistance {
+    fn default() -> Self {
+        Self(NonZeroU32::MAX)
+    }
+}
+
+impl Mode for RelaxedTailSync {
+    type Settings = MaxHeadTailDistance;
+
+    #[inline]
+    fn new_with(settings: Self::Settings) -> Self {
+        Self {
+            head: AtomicPosCnt::default(),
+            htd_max: settings.0,
+            tail: AtomicPosCnt::default(),
+        }
     }
 }
 

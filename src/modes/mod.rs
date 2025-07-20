@@ -43,8 +43,15 @@ pub use single::Single;
 /// - [`HeadTailSync`]: Allows multithreaded access but only one thread is allowed to update the head.
 ///   Only after it's done with the slots and updated the tail the next thread can update the head.
 /// - [`RelaxedTailSync`]: Similar to `Multi`, but only the last thread updates the tail.
-pub trait Mode: ModeInner {}
-impl<T: ModeInner> Mode for T {}
+pub trait Mode: ModeInner {
+    /// The settings for this mode.
+    ///
+    /// Currently only relevant for [`RelaxedTailSync`].
+    type Settings: Default;
+
+    /// Create the mode with custom settings.
+    fn new_with(settings: Self::Settings) -> Self;
+}
 
 /// Represents the head and tail.
 ///

@@ -27,6 +27,15 @@ pub struct Single {
     _not_sync: PhantomData<*mut ()>,
 }
 
+impl Mode for Single {
+    type Settings = ();
+
+    #[inline]
+    fn new_with(_settings: Self::Settings) -> Self {
+        Self::default()
+    }
+}
+
 impl ModeInner for Single {
     fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,

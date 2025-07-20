@@ -23,6 +23,15 @@ pub struct Multi {
     tail: AtomicU32,
 }
 
+impl Mode for Multi {
+    type Settings = ();
+
+    #[inline]
+    fn new_with(_settings: Self::Settings) -> Self {
+        Self::default()
+    }
+}
+
 impl ModeInner for Multi {
     fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,

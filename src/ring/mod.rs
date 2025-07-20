@@ -58,6 +58,14 @@ where
         reason = "This type should only be used through the sender and receiver"
     )]
     pub fn new() -> (Sender<N, T, P, C>, Receiver<N, T, P, C>) {
+        Self::new_with_config(P::Settings::default(), C::Settings::default())
+    }
+
+    /// Create the ring returning a sender and receiver.
+    pub fn new_with_config(
+        producer_settings: P::Settings,
+        consumer_settings: C::Settings,
+    ) -> (Sender<N, T, P, C>, Receiver<N, T, P, C>) {
         // Check input
         const {
             assert!(
@@ -97,10 +105,10 @@ where
                 .write(CachePadded::new(AtomicActive::new(1, 1)));
             ptr.add(offset_of!(Self, prod_headtail))
                 .cast::<CachePadded<P>>()
-                .write(CachePadded::default());
+                .write(CachePadded::new(P::new_with(producer_settings)));
             ptr.add(offset_of!(Self, cons_headtail))
                 .cast::<CachePadded<C>>()
-                .write(CachePadded::default());
+                .write(CachePadded::new(C::new_with(consumer_settings)));
             ptr.add(offset_of!(Self, data))
                 .cast::<CachePadded<[UnsafeCell<MaybeUninit<T>>; N]>>()
                 .write(CachePadded::new(core::array::from_fn(|_| {

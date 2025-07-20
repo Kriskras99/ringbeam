@@ -82,6 +82,15 @@ impl HeadTailSync {
     }
 }
 
+impl Mode for HeadTailSync {
+    type Settings = ();
+
+    #[inline]
+    fn new_with(_settings: Self::Settings) -> Self {
+        Self::default()
+    }
+}
+
 impl ModeInner for HeadTailSync {
     fn move_head<const N: usize, const IS_PROD: bool, const EXACT: bool, Other: Mode>(
         &self,
